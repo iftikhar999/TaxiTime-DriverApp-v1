@@ -1,7 +1,9 @@
-import React, { useEffect, useMemo, useRef } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { StyleSheet, Text, View, ViewStyle } from "react-native";
-import MapView, { Camera, Marker, Polyline, PROVIDER_GOOGLE, Region } from "react-native-maps";
+import MapView, { Camera, Marker, Polyline, PROVIDER_DEFAULT, PROVIDER_GOOGLE, Region } from "react-native-maps";
 import MaterialCommunityIcons from "react-native-vector-icons/MaterialCommunityIcons";
+import { useAuth } from "../context/AuthContext";
+import { fetchCompanySettings, MapProvider } from "../services/companySettingsService";
 import { Colors } from "../theme/colors";
 
 type CoordinateInput = {
@@ -83,6 +85,34 @@ const RideMap: React.FC<RideMapProps> = ({
   updateInterval = 5000, // ✅ NEW: Default 5s if not provided (matches default location interval)
 }) => {
   const mapRef = useRef<MapView | null>(null);
+  const { user } = useAuth();
+  const [mapProvider, setMapProvider] = useState<MapProvider>("NATIVE");
+
+  // Fetch company map provider settings
+  useEffect(() => {
+    const fetchMapProvider = async () => {
+      if (!user?.companyId) return;
+      
+      try {
+        const settings = await fetchCompanySettings(user.companyId);
+        const normalizeMapProvider = (value?: string | null): MapProvider => {
+          if (!value) return "NATIVE";
+          const normalized = value.toUpperCase().replace(/\s+/g, "_");
+          if (normalized.includes("NATIVE") || normalized.includes("DEFAULT")) return "NATIVE";
+          if (normalized.includes("GOOGLE")) return "GOOGLE_MAPS";
+          if (normalized.includes("OPEN") && normalized.includes("MAP")) return "OPENSTREETMAP";
+          return "NATIVE";
+        };
+        const provider = normalizeMapProvider(settings?.mapProvider);
+        setMapProvider(provider);
+        console.log(`🗺️ RideMap provider: ${provider}`);
+      } catch (error) {
+        console.error("Failed to fetch map provider:", error);
+      }
+    };
+
+    fetchMapProvider();
+  }, [user?.companyId]);
 
   const points = useMemo(() => {
     const coords: Array<{ latitude: number; longitude: number }> = [];
@@ -166,12 +196,16 @@ const RideMap: React.FC<RideMapProps> = ({
 
   const showMap = points.length > 0;
 
+  // Convert MapProvider string to react-native-maps provider constant
+  const mapProviderConstant =
+    mapProvider === "GOOGLE_MAPS" ? PROVIDER_GOOGLE : PROVIDER_DEFAULT;
+
   return (
     <View style={[styles.container, { height }, style]}>
       {showMap ? (
         <MapView
           ref={mapRef} // ✨ NEW: Ref for camera control
-          provider={PROVIDER_GOOGLE}
+          provider={mapProviderConstant}
           style={StyleSheet.absoluteFill}
           initialRegion={region}
           region={followDriver ? undefined : region} // ✨ Don't force region when following
