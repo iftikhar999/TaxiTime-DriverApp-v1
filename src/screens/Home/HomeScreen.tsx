@@ -22,13 +22,45 @@ import {
 } from "react-native";
 import MapView, {
     AnimatedRegion,
+    MapStyleElement,
     Marker,
     Polygon,
+    PROVIDER_DEFAULT,
     PROVIDER_GOOGLE,
 } from "react-native-maps";
 import Toast from "react-native-toast-message";
 import Icon from "react-native-vector-icons/Feather";
 import MCIcon from "react-native-vector-icons/MaterialCommunityIcons";
+
+// ✅ Custom map style: Hide all POIs, business logos, and unnecessary markers
+const MINIMAL_MAP_STYLE: MapStyleElement[] = [
+  {
+    featureType: "poi",
+    elementType: "all",
+    stylers: [{ visibility: "off" }],
+  },
+  {
+    featureType: "poi.business",
+    elementType: "all",
+    stylers: [{ visibility: "off" }],
+  },
+  {
+    featureType: "transit",
+    elementType: "labels.icon",
+    stylers: [{ visibility: "off" }],
+  },
+  {
+    featureType: "administrative",
+    elementType: "labels",
+    stylers: [{ visibility: "simplified" }],
+  },
+  {
+    featureType: "landscape",
+    elementType: "labels",
+    stylers: [{ visibility: "off" }],
+  },
+];
+
 import Typography from "../../components/design/Typography";
 import { useAuth } from "../../context/AuthContext";
 import { useJob } from "../../context/JobContext";
@@ -67,16 +99,19 @@ const DEFAULT_COORDS = {
 
 const normalizeMapProvider = (value?: string | null): MapProvider => {
   if (!value) {
-    return "GOOGLE_MAPS"; // Changed from OPENSTREETMAP to GOOGLE_MAPS as default
+    return "NATIVE"; // Default to free native maps
   }
   const normalized = value.toUpperCase().replace(/\s+/g, "_");
+  if (normalized.includes("NATIVE") || normalized.includes("DEFAULT")) {
+    return "NATIVE";
+  }
   if (normalized.includes("GOOGLE")) {
     return "GOOGLE_MAPS";
   }
   if (normalized.includes("OPEN") && normalized.includes("MAP")) {
     return "OPENSTREETMAP";
   }
-  return "GOOGLE_MAPS"; // Changed from OPENSTREETMAP to GOOGLE_MAPS as fallback
+  return "NATIVE"; // Default fallback to free native maps
 };
 
 type DriverAvailability = "AVAILABLE" | "AWAY" | "BUSY";
@@ -160,7 +195,7 @@ interface LocationMapProps {
   mapProviderLoading?: boolean;
   zoneCoordinates?: Array<{ lat: number; lng: number }> | null;
   lastUpdatedAt?: string | null;
-  locationUpdateInterval?: number; // in milliseconds
+  locationUpdateInterval?: number; // Unified interval for GPS detection, map updates, and socket emissions (milliseconds)
 }
 
 const LocationMap: React.FC<LocationMapProps> = ({
@@ -203,6 +238,7 @@ const LocationMap: React.FC<LocationMapProps> = ({
   const [mapKey, setMapKey] = useState(0);
   const initialDelta = hasLiveFix ? DEFAULT_ACTIVE_DELTA : DEFAULT_IDLE_DELTA;
   const [latitudeDelta, setLatitudeDelta] = useState(initialDelta);
+  const [markerTracksChanges, setMarkerTracksChanges] = useState(true);
 
   const animatedCoordinate = useRef(
     new AnimatedRegion({
@@ -213,6 +249,9 @@ const LocationMap: React.FC<LocationMapProps> = ({
     })
   ).current;
 
+  // Convert MapProvider string to react-native-maps provider constant
+  const mapProviderConstant =
+    mapProvider === "GOOGLE_MAPS" ? PROVIDER_GOOGLE : PROVIDER_DEFAULT;
   const isGoogleProvider = mapProvider === "GOOGLE_MAPS";
 
   // ✅ DISABLED: Too noisy - only log on critical state changes
@@ -253,6 +292,15 @@ const LocationMap: React.FC<LocationMapProps> = ({
     }));
   }, [zoneCoordinates]);
 
+  // ✅ Disable marker view tracking after initial render for performance
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      console.log("🎯 Disabling marker tracksViewChanges for performance");
+      setMarkerTracksChanges(false);
+    }, 3000); // Wait 3 seconds after mount
+    return () => clearTimeout(timer);
+  }, []);
+
   const lastUpdatedLabel = useMemo(() => {
     if (!lastUpdatedAt) return null;
     const parsed = new Date(lastUpdatedAt);
@@ -282,41 +330,30 @@ const LocationMap: React.FC<LocationMapProps> = ({
 
   const animateCamera = useCallback(
     (duration = 600) => {
-      if (!mapRef.current || !mapReady) {
+      if (!mapRef.current || !mapReady || !isFollowing) {
         return;
       }
 
       const center = { latitude: derivedLatitude, longitude: derivedLongitude };
 
-      if (isGoogleProvider) {
-        mapRef.current.animateCamera(
-          {
-            center,
-            heading,
-            pitch: 0,
-            zoom: deltaToZoom(latitudeDelta),
-          },
-          { duration }
-        );
-      } else {
-        mapRef.current.animateToRegion(
-          {
-            ...center,
-            latitudeDelta,
-            longitudeDelta: latitudeDelta,
-          },
-          duration
-        );
-      }
+      // EXACT WORKING CONFIG FROM JobTrackingScreen.js
+      mapRef.current.animateCamera(
+        {
+          center,
+          heading: parseInt(heading.toString()), 
+          pitch: 60,
+          zoom: 17,
+          altitude: 500,
+        },
+        { duration: 500 }
+      );
     },
     [
       derivedLatitude,
       derivedLongitude,
       heading,
-      isGoogleProvider,
-      latitudeDelta,
+      isFollowing,
       mapReady,
-      deltaToZoom,
     ]
   );
 
@@ -329,8 +366,23 @@ const LocationMap: React.FC<LocationMapProps> = ({
         latitudeDelta,
         longitudeDelta: latitudeDelta,
       });
+      
+      // ✅ DEBUG: Log marker position
+      console.log('🎯 Marker position (no GPS fix):', {
+        lat: derivedLatitude.toFixed(6),
+        lng: derivedLongitude.toFixed(6),
+        usingFallback: true
+      });
       return;
     }
+
+    // ✅ DEBUG: Log marker position updates
+    console.log('🎯 Marker position (GPS):', {
+      lat: derivedLatitude.toFixed(6),
+      lng: derivedLongitude.toFixed(6),
+      heading: heading.toFixed(1),
+      speed: speedKmh?.toFixed(1) || '0'
+    });
 
     animatedCoordinate
       .timing({
@@ -356,6 +408,7 @@ const LocationMap: React.FC<LocationMapProps> = ({
     mapReady,
     animateCamera,
     latitudeDelta,
+    heading, // ✨ NEW: Re-animate when heading changes to rotate map
   ]);
 
   useEffect(() => {
@@ -462,23 +515,28 @@ const LocationMap: React.FC<LocationMapProps> = ({
         <MapView
           ref={mapRef}
           style={styles.map}
-          provider={PROVIDER_GOOGLE}
+          provider={mapProviderConstant}
+          customMapStyle={isGoogleProvider ? MINIMAL_MAP_STYLE : undefined}
           initialRegion={{
             latitude: derivedLatitude,
             longitude: derivedLongitude,
             latitudeDelta: 0.01,
             longitudeDelta: 0.01,
           }}
-          showsUserLocation={true}
+          showsUserLocation={false}
           showsMyLocationButton={true}
           showsCompass={false}
           scrollEnabled={true}
           zoomEnabled={true}
-          followsUserLocation={true}
+          followsUserLocation={false}
           showsTraffic={false}
-          userLocationUpdateInterval={100}
+          pitchEnabled={true}
+          rotateEnabled={true}
+          showsBuildings={false}
+          mapType="standard"
+          userLocationUpdateInterval={locationUpdateInterval || 2000}
           onMapReady={() => {
-            console.log("🗺️ Google Maps ready");
+            console.log(`🗺️ Map ready (Provider: ${mapProvider})`);
             setMapReady(true);
           }}
         >
@@ -491,28 +549,58 @@ const LocationMap: React.FC<LocationMapProps> = ({
             />
           ) : null}
 
+          {/* ✅ DRIVER MARKER - Same design as ActiveRideScreen */}
           <AnimatedMarker
             coordinate={{
               latitude: animatedCoordinate.latitude,
               longitude: animatedCoordinate.longitude,
             }}
             anchor={{ x: 0.5, y: 0.5 }}
-            flat
-            tracksViewChanges={false}
+            flat={true}
+            tracksViewChanges={markerTracksChanges}
+            zIndex={1000}
+            opacity={1}
+            rotation={heading}
           >
             <View
-              style={[
-                styles.vehicleMarkerWrapper,
-                { transform: [{ rotate: `${heading}deg` }] },
-              ]}
+              style={styles.vehicleMarker}
               pointerEvents="none"
             >
-              <View style={styles.vehicleMarkerGlow} />
-              <View style={styles.vehicleMarker}>
-                <MCIcon name="navigation-variant" size={20} color="#0f172a" />
-              </View>
+              <MCIcon name="navigation" size={24} color="#fff" />
             </View>
           </AnimatedMarker>
+
+          {/* 🔥 FALLBACK: Regular marker to ensure something shows */}
+          <Marker
+            coordinate={{
+              latitude: derivedLatitude,
+              longitude: derivedLongitude,
+            }}
+            anchor={{ x: 0.5, y: 0.5 }}
+            flat={true}
+            zIndex={999}
+            opacity={1}
+          >
+            <View
+              style={[styles.vehicleMarker, { backgroundColor: '#ef4444' }]}
+              pointerEvents="none"
+            >
+              <MCIcon name="car" size={20} color="#fff" />
+            </View>
+          </Marker>
+          
+          {/* ✅ DEBUG: Static marker at default location for testing */}
+          {!hasLiveFix && (
+            <Marker
+              coordinate={{
+                latitude: derivedLatitude,
+                longitude: derivedLongitude,
+              }}
+              title="Fallback Position"
+              description="Waiting for GPS fix..."
+              pinColor="#FF6B6B"
+            />
+          )}
         </MapView>
 
         {!mapReady && !mapError && !mapLoadTimeout ? (
@@ -592,55 +680,53 @@ const LocationMap: React.FC<LocationMapProps> = ({
 
         {mapReady && !mapError ? (
           <View style={styles.mapOverlay}>
-            <View style={styles.mapStatusRow}>
+            {/* Consolidated Inline Status Row - All badges in one line */}
+            <View style={styles.mapStatusInline}>
+              {/* Following/Manual Badge */}
               <View style={styles.mapStatusBadge}>
                 <MCIcon
                   name={isFollowing ? "crosshairs-gps" : "gesture-tap"}
-                  size={14}
+                  size={12}
                   color="#38bdf8"
                 />
-                <Text style={styles.mapStatusText}>
-                  {isFollowing ? "Following driver" : "Manual view"}
+                <Text style={styles.mapStatusTextCompact}>
+                  {isFollowing ? "Following" : "Manual"}
                 </Text>
               </View>
-              {lastUpdatedLabel ? (
+
+              {/* Zone Info */}
+              {zoneName && (
                 <View style={styles.mapStatusBadge}>
-                  <MCIcon name="clock-outline" size={14} color="#f5b400" />
-                  <Text style={styles.mapStatusText}>{lastUpdatedLabel}</Text>
+                  <MCIcon name="map-marker" size={12} color="#f5b400" />
+                  <Text style={styles.mapStatusTextCompact}>{zoneName}</Text>
                 </View>
-              ) : null}
-            </View>
+              )}
 
-            <View style={styles.mapFooter}>
-              <View style={styles.mapFooterSegment}>
-                <MCIcon name="map-marker" size={14} color="#f5b400" />
-                {mapProviderLoading ? (
-                  <Text style={styles.mapFooterSecondary}>
-                    Applying map settings…
-                  </Text>
-                ) : zoneName ? (
-                  <Text style={styles.mapFooterText}>Zone: {zoneName}</Text>
-                ) : zoneLoading ? (
-                  <Text style={styles.mapFooterSecondary}>Detecting zone…</Text>
-                ) : (
-                  <Text style={styles.mapFooterSecondary}>
-                    Zone: Unassigned
-                  </Text>
-                )}
-              </View>
-
+              {/* Motion State */}
               <View
                 style={[
-                  styles.mapMotionBadge,
+                  styles.mapMotionBadgeCompact,
                   { backgroundColor: motionStateColor },
                 ]}
               >
-                <Text style={styles.mapMotionText}>{motionStateLabel}</Text>
+                <Text style={styles.mapMotionTextCompact}>{motionStateLabel}</Text>
               </View>
 
-              <Text style={styles.mapFooterSecondary}>
-                {speedKmh != null ? `${speedKmh.toFixed(0)} km/h` : "Speed N/A"}
-              </Text>
+              {/* Speed */}
+              <View style={styles.mapStatusBadge}>
+                <MCIcon name="speedometer" size={12} color="#f5b400" />
+                <Text style={styles.mapStatusTextCompact}>
+                  {speedKmh != null ? `${speedKmh.toFixed(0)} km/h` : "N/A"}
+                </Text>
+              </View>
+
+              {/* Updated Time */}
+              {lastUpdatedLabel && (
+                <View style={styles.mapStatusBadge}>
+                  <MCIcon name="clock-outline" size={12} color="#f5b400" />
+                  <Text style={styles.mapStatusTextCompact}>{lastUpdatedLabel}</Text>
+                </View>
+              )}
             </View>
           </View>
         ) : null}
@@ -650,7 +736,7 @@ const LocationMap: React.FC<LocationMapProps> = ({
 };
 
 // ✅ NEW: Today's Stats Component
-const TodayStatsSection: React.FC = () => {
+const TodayStatsSection: React.FC<{ onStatsLoaded?: (todayJobs: number) => void }> = ({ onStatsLoaded }) => {
   const [stats, setStats] = useState<{ todayJobs: number; todayEarnings: string } | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -660,6 +746,16 @@ const TodayStatsSection: React.FC = () => {
         const response = await httpClient.get('/mobile/driver/jobs/stats/today');
         if (response?.success && response?.stats) {
           setStats(response.stats);
+          // ✅ FIX: Notify parent component of today's job count for ride history sync
+          if (onStatsLoaded && typeof response.stats.todayJobs === 'number') {
+            onStatsLoaded(response.stats.todayJobs);
+          }
+        } else if (response?.data?.success && response?.data?.stats) {
+          // ✅ FIX: Handle wrapped response format
+          setStats(response.data.stats);
+          if (onStatsLoaded && typeof response.data.stats.todayJobs === 'number') {
+            onStatsLoaded(response.data.stats.todayJobs);
+          }
         }
       } catch (error) {
         console.error('❌ Failed to fetch today stats:', error);
@@ -672,7 +768,7 @@ const TodayStatsSection: React.FC = () => {
     // Refresh every 30 seconds
     const interval = setInterval(fetchTodayStats, 30000);
     return () => clearInterval(interval);
-  }, []);
+  }, [onStatsLoaded]);
 
   if (loading) {
     return null; // Don't show anything while loading initially
@@ -685,16 +781,21 @@ const TodayStatsSection: React.FC = () => {
   return (
     <View style={styles.todayStatsContainer}>
       <Text style={styles.todayStatsTitle}>Today's Performance</Text>
-      <View style={styles.todayStatsRow}>
-        <View style={styles.todayStatCard}>
-          <MCIcon name="briefcase-check" size={24} color="#10b981" />
-          <Text style={styles.todayStatValue}>{stats.todayJobs}</Text>
-          <Text style={styles.todayStatLabel}>Jobs Completed</Text>
+      <View style={styles.todayStatsSingleCard}>
+        <View style={styles.todayStatRow}>
+          <MCIcon name="briefcase-check" size={28} color="#10b981" />
+          <View style={styles.todayStatTextContainer}>
+            <Text style={styles.todayStatValue}>{stats.todayJobs} Trips</Text>
+            <Text style={styles.todayStatLabel}>Jobs Completed</Text>
+          </View>
         </View>
-        <View style={styles.todayStatCard}>
-          <MCIcon name="cash-multiple" size={24} color="#3b82f6" />
-          <Text style={styles.todayStatValue}>${stats.todayEarnings}</Text>
-          <Text style={styles.todayStatLabel}>Total Earnings</Text>
+        <View style={styles.todayStatDivider} />
+        <View style={styles.todayStatRow}>
+          <MCIcon name="cash-multiple" size={28} color="#3b82f6" />
+          <View style={styles.todayStatTextContainer}>
+            <Text style={styles.todayStatValue}>${stats.todayEarnings}</Text>
+            <Text style={styles.todayStatLabel}>Total Earnings</Text>
+          </View>
         </View>
       </View>
     </View>
@@ -732,7 +833,7 @@ interface DashboardProps {
   mapProvider: MapProvider;
   mapProviderLoading: boolean;
   zoneCoordinates?: Array<{ lat: number; lng: number }> | null;
-  locationUpdateInterval?: number;
+  locationUpdateInterval?: number; // Unified interval for GPS, map, and socket
   shouldShowUpcomingJobs: boolean;
   upcomingJobs: UpcomingJobSummary[];
   upcomingJobsLoading: boolean;
@@ -740,6 +841,7 @@ interface DashboardProps {
   onClaimUpcomingJob: (jobId: string) => void;
   claimingJobId: string | null;
   hasPendingAction: boolean;
+  onStatsLoaded?: (todayJobs: number) => void; // ✅ NEW: Callback for stats sync
 }
 
 const DashboardView: React.FC<DashboardProps> = ({
@@ -776,6 +878,7 @@ const DashboardView: React.FC<DashboardProps> = ({
   onClaimUpcomingJob,
   claimingJobId,
   hasPendingAction,
+  onStatsLoaded, // ✅ NEW: Callback for stats sync
 }) => {
   const [refreshing, setRefreshing] = useState(false);
 
@@ -1070,7 +1173,7 @@ const DashboardView: React.FC<DashboardProps> = ({
         )}
 
         {/* Today's Stats Section */}
-        <TodayStatsSection />
+        <TodayStatsSection onStatsLoaded={onStatsLoaded} />
 
         <View style={styles.historySection}>
           <Text style={styles.sectionTitle}>Previous Trips</Text>
@@ -1255,31 +1358,8 @@ const VehicleSelectionView: React.FC<{
           </View>
         ) : null}
 
-        {zoneError ? (
-          <View style={styles.zoneErrorBanner}>
-            <View style={styles.zoneErrorContent}>
-              <MCIcon name="alert-circle" size={16} color={Colors.danger} />
-              <Text style={styles.zoneErrorText} numberOfLines={2}>
-                {zoneError}
-              </Text>
-            </View>
-            <TouchableOpacity
-              onPress={() => void onRetryZone?.()}
-              style={styles.zoneRetryButton}
-              disabled={zoneLoading}
-              activeOpacity={0.85}
-            >
-              <Text
-                style={[
-                  styles.zoneRetryText,
-                  zoneLoading && styles.zoneRetryTextDisabled,
-                ]}
-              >
-                {zoneLoading ? "Retrying…" : "Retry"}
-              </Text>
-            </TouchableOpacity>
-          </View>
-        ) : null}
+        {/* ✅ Don't show zone error on vehicle selection - zone detection requires active shift */}
+        {/* Zone will be detected automatically when shift starts and location tracking begins */}
 
         <FlatList
           data={vehicles}
@@ -1359,10 +1439,10 @@ const HomeScreen: React.FC = () => {
     error: zoneError,
     forceRefresh: retryZoneDetection,
   } = useZone();
-  const [mapProvider, setMapProvider] = useState<MapProvider>("OPENSTREETMAP");
+  const [mapProvider, setMapProvider] = useState<MapProvider>("NATIVE");
   const [mapProviderLoading, setMapProviderLoading] = useState(false);
   const [locationUpdateInterval, setLocationUpdateInterval] =
-    useState<number>(2000); // Default 2 seconds in milliseconds
+    useState<number>(2000); // Default 2 seconds - unified interval for GPS, map, and socket
   const navigation =
     useNavigation<NativeStackNavigationProp<AppStackParamList, "Home">>();
   const [initialised, setInitialised] = useState(false);
@@ -1379,6 +1459,18 @@ const HomeScreen: React.FC = () => {
     null
   );
   const [claimingJobId, setClaimingJobId] = useState<string | null>(null);
+  const [todayJobsCount, setTodayJobsCount] = useState<number>(0); // ✅ NEW: Track today's job count
+
+  // ✅ FIX: Sync ride history with today's stats - fetch more history if needed
+  const handleStatsLoaded = useCallback((todayJobs: number) => {
+    setTodayJobsCount(todayJobs);
+    
+    // If today has more jobs than what's showing in ride history, fetch more
+    if (todayJobs > rideHistory.length && todayJobs > 0) {
+      console.log(`📊 Today has ${todayJobs} jobs but only showing ${rideHistory.length}, fetching more history`);
+      refreshRideHistory(Math.max(todayJobs, 5)); // Fetch at least 5 or today's count
+    }
+  }, [rideHistory.length, refreshRideHistory]);
   const lastSyncedStatus = useRef<DriverShiftStatus | null>(null);
   const clearAwayReminder = useCallback(() => {
     if (awayReminderTimerRef.current) {
@@ -1448,11 +1540,24 @@ const HomeScreen: React.FC = () => {
     () => (isBusy ? "BUSY" : manualStatus),
     [isBusy, manualStatus]
   );
-  const shouldShowUpcomingJobs = useMemo(
-    () =>
-      !isBusy && !currentJob && Boolean(currentZone?.id) && Boolean(activeShift?.id),
-    [isBusy, currentJob, currentZone?.id, activeShift?.id]
-  );
+  const shouldShowUpcomingJobs = useMemo(() => {
+    const result = !isBusy && !currentJob && Boolean(currentZone?.id) && Boolean(activeShift?.id);
+    
+    console.log('🔍 shouldShowUpcomingJobs calculation:', {
+      result,
+      isBusy,
+      currentJob: !!currentJob,
+      currentJobId: currentJob?.id,
+      hasZone: Boolean(currentZone?.id),
+      zoneId: currentZone?.id,
+      zoneName: currentZone?.name,
+      hasActiveShift: Boolean(activeShift?.id),
+      activeShiftId: activeShift?.id,
+      jobStatus,
+    });
+    
+    return result;
+  }, [isBusy, currentJob, currentZone?.id, currentZone?.name, activeShift?.id, jobStatus]);
 
   useEffect(() => {
     console.log("👤 DRIVER INFO:", {
@@ -1461,20 +1566,39 @@ const HomeScreen: React.FC = () => {
     });
 
     if (!driver?.company?.id) {
+      console.warn("⚠️ No company ID found for driver, using default settings");
       setMapProvider("OPENSTREETMAP");
       setMapProviderLoading(false);
-      setLocationUpdateInterval(2000); // Default 2 seconds
+      const defaultInterval = 2; // 2 seconds - matches database default
+      setLocationUpdateInterval(defaultInterval * 1000);
+      // ✅ Initialize socket throttle with default
+      updateSocketIntervals(defaultInterval, defaultInterval);
+      console.log(`⚠️ Using DEFAULT intervals: ${defaultInterval}s (no company ID)`);
       return;
     }
 
     let active = true;
     setMapProviderLoading(true);
 
+    console.log(`📡 Fetching company settings for companyId: ${driver?.company?.id}`);
+
     fetchCompanySettings(driver?.company?.id)
       .then(async (payload) => {
-        console.log("🏢 Company Settings Payload:", payload);
+        console.log("🏢 RAW Company Settings Payload:", JSON.stringify(payload, null, 2));
+        
         if (!active) {
+          console.log("⏭️ Component unmounted, skipping settings update");
           return;
+        }
+
+        if (!payload) {
+          console.error("❌ Company settings payload is null/undefined");
+          throw new Error("Empty payload received from fetchCompanySettings");
+        }
+
+        if (!payload.settings) {
+          console.error("❌ Company settings.settings is null/undefined:", payload);
+          throw new Error("Settings object missing from payload");
         }
 
         console.log(
@@ -1488,18 +1612,22 @@ const HomeScreen: React.FC = () => {
         );
         setMapProvider(provider);
 
-        // Set location update interval (convert seconds to milliseconds)
-        // ⚡ TEMPORARY FIX: Force 3-second updates for smooth tracking during active jobs
-        const intervalSeconds = 3; // TODO: Use payload?.settings?.locationUpdateInterval ?? 2
+        // ✅ UNIFIED INTERVAL: Use company location update interval for GPS, map, and socket
+        const intervalSeconds = payload?.settings?.locationUpdateInterval ?? 2; // Default 2s if not set
         const intervalMs = intervalSeconds * 1000;
-        console.log("🔧 LOCATION UPDATE INTERVAL CONFIG:", {
+        
+        console.log("🔧 UNIFIED LOCATION INTERVAL CONFIG:", {
           intervalSeconds,
           intervalMs,
           source: payload?.settings?.locationUpdateInterval ? 'company_settings' : 'default',
+          rawValue: payload?.settings?.locationUpdateInterval,
+          usage: 'GPS detection + Map updates + Socket emissions',
           companyId: driver?.company?.id,
           companyName: driver?.company?.name,
         });
+        
         setLocationUpdateInterval(intervalMs);
+        console.log(`✅ Unified interval set to ${intervalMs}ms (${intervalSeconds}s) for GPS, map, and socket`);
 
         // Update native location service interval
         try {
@@ -1508,28 +1636,32 @@ const HomeScreen: React.FC = () => {
           );
           await updateLocationInterval(intervalSeconds);
           console.log(
-            `✅ GPS INTERVAL UPDATED: ${intervalSeconds}s (map will update every ${intervalSeconds}s)`
+            `✅ GPS INTERVAL UPDATED: ${intervalSeconds}s (earliest detection at this rate)`
           );
         } catch (error) {
           console.error("❌ FAILED to update GPS interval:", error);
           console.error("   This means GPS is using default (2s) instead of company setting");
         }
 
-        // Update socket intervals (location throttle + heartbeat)
+        // ✅ CRITICAL: Use heartbeat from database, fallback to location interval if not set
+        // Socket throttle MUST match location interval for unified control
         try {
           const companyHeartbeat = payload?.settings?.heartbeatInterval as number | undefined;
-          const heartbeatSeconds = companyHeartbeat ?? Math.max(intervalSeconds * 6, 30);
+          // ✅ FIX: Don't calculate - use DB value or default to location interval
+          const heartbeatSeconds = companyHeartbeat ?? intervalSeconds;
           
-          console.log("💓 HEARTBEAT INTERVAL CONFIG:", {
-            fromCompanySettings: companyHeartbeat,
-            calculated: heartbeatSeconds,
-            source: companyHeartbeat ? 'company_settings' : 'fallback',
-            fallbackLogic: `Math.max(${intervalSeconds} * 6, 30) = ${Math.max(intervalSeconds * 6, 30)}`,
+          console.log("💓 SOCKET CONFIG (DATABASE CONTROLLED):", {
+            locationIntervalFromDB: intervalSeconds,
+            heartbeatIntervalFromDB: companyHeartbeat,
+            heartbeatUsed: heartbeatSeconds,
+            heartbeatSource: companyHeartbeat ? 'database' : 'fallback_to_location_interval',
+            note: '⚠️ Socket throttle = location interval (unified control)',
           });
           
+          // ✅ CRITICAL: Both intervals controlled by database
           updateSocketIntervals(intervalSeconds, heartbeatSeconds);
           console.log(
-            `✅ Socket intervals updated - Location: ${intervalSeconds}s, Heartbeat: ${heartbeatSeconds}s (${companyHeartbeat ? 'from company' : 'using fallback'})`
+            `✅ Socket configured from DATABASE - Location throttle: ${intervalSeconds}s, Heartbeat: ${heartbeatSeconds}s`
           );
         } catch (error) {
           console.error("❌ FAILED to update socket intervals:", error);
@@ -1537,14 +1669,25 @@ const HomeScreen: React.FC = () => {
       })
       .catch((error) => {
         if (active) {
-          console.error("Company settings load failed", error);
-          setMapProvider("GOOGLE_MAPS"); // Changed from OPENSTREETMAP to GOOGLE_MAPS
-          setLocationUpdateInterval(2000); // Default 2 seconds on error
+          console.error("❌ Company settings load failed:", error);
+          console.error("   Error details:", {
+            message: error?.message,
+            response: error?.response?.data,
+            status: error?.response?.status,
+            companyId: driver?.company?.id,
+          });
+          const fallbackInterval = 2; // 2 seconds default
+          setMapProvider("GOOGLE_MAPS");
+          setLocationUpdateInterval(fallbackInterval * 1000);
+          // ✅ Initialize socket throttle with fallback
+          updateSocketIntervals(fallbackInterval, fallbackInterval);
+          console.log(`⚠️ Using FALLBACK intervals: ${fallbackInterval}s (settings load failed)`);
         }
       })
       .finally(() => {
         if (active) {
           setMapProviderLoading(false);
+          console.log("✅ Company settings fetch complete");
         }
       });
 
@@ -1602,18 +1745,27 @@ const HomeScreen: React.FC = () => {
 
   useEffect(() => {
     if (!initialised && driver?.id) {
-      // ✅ REMOVED refreshCurrentShift - ShiftContext handles shift loading automatically
-      // This was causing race conditions with loadPersistedState
-      Promise.all([
-        refreshVehicles(),
-        refreshRideHistory(3),
-      ])
-        .catch((error) => console.error("Initial data load failed", error))
-        .finally(() => setInitialised(true));
+      // ✅ FIX: Refresh shift stats on mount to get latest earnings/trips data
+      // We need to call this even though ShiftContext loads from storage, 
+      // because storage might have stale stats
+      
+      // ⏱️ Wait 3 seconds before refreshing shift to allow server propagation after shift start
+      const refreshTimer = setTimeout(() => {
+        Promise.all([
+          refreshCurrentShift(), // ✅ Get latest shift stats from server
+          refreshVehicles(),
+          refreshRideHistory(3),
+        ])
+          .catch((error) => console.error("Initial data load failed", error))
+          .finally(() => setInitialised(true));
+      }, 3000);
+
+      return () => clearTimeout(refreshTimer);
     }
   }, [
     initialised,
     driver?.id,
+    refreshCurrentShift, // ✅ Added to dependencies
     refreshRideHistory,
     refreshVehicles,
   ]);
@@ -1628,19 +1780,24 @@ const HomeScreen: React.FC = () => {
       const timeSinceLastRefresh = now - lastFocusRefresh.current;
 
       if (driver?.id && timeSinceLastRefresh > FOCUS_REFRESH_DEBOUNCE) {
-        console.log("🔄 Refreshing ride history only (shift managed by ShiftContext)");
+        console.log("🔄 Refreshing shift stats and ride history (after 10s delay)");
         lastFocusRefresh.current = now;
         
-        // ✅ REMOVED: refreshCurrentShift() - ShiftContext handles shift state automatically
-        // Calling it here causes race conditions with persisted shift restoration
-        
-        refreshRideHistory(3).catch((error) =>
-          console.error("Ride history refresh failed", error)
-        );
+        // ⏱️ Wait 10 seconds before refreshing to allow server propagation after shift start
+        // 🔥 FIX: Changed from 3s to 10s to prevent premature shift validation that clears new shifts
+        setTimeout(() => {
+          // ✅ FIX: Refresh shift stats to get latest earnings/trips from server
+          Promise.all([
+            refreshCurrentShift(), // ✅ Get latest shift stats
+            refreshRideHistory(3),
+          ]).catch((error) =>
+            console.error("Focus refresh failed", error)
+          );
+        }, 10000);
       } else {
         console.log("⏭️ Skipping refresh - data is fresh");
       }
-    }, [driver?.id, refreshRideHistory])
+    }, [driver?.id, refreshCurrentShift, refreshRideHistory])
   );
 
   // Helper function to calculate distances for jobs (doesn't trigger refetch)
@@ -1671,7 +1828,18 @@ const HomeScreen: React.FC = () => {
   }, [location]);
 
   const refreshUpcomingJobs = useCallback(async () => {
+    console.log('🔍 refreshUpcomingJobs CALLED:', {
+      shouldShowUpcomingJobs,
+      isBusy,
+      hasCurrentJob: !!currentJob,
+      hasZone: !!currentZone?.id,
+      zoneName: currentZone?.name,
+      hasActiveShift: !!activeShift?.id,
+      shiftId: activeShift?.id,
+    });
+
     if (!shouldShowUpcomingJobs) {
+      console.log('⏭️ Skipping job fetch - conditions not met');
       setUpcomingJobs([]);
       setUpcomingJobsError(null);
       setUpcomingJobsLoading(false);
@@ -1682,12 +1850,33 @@ const HomeScreen: React.FC = () => {
     setUpcomingJobsError(null);
 
     try {
-      console.log('📡 Fetching upcoming jobs...');
+      console.log('📡 Fetching upcoming jobs...', {
+        zoneId: currentZone?.id,
+        zoneName: currentZone?.name,
+        driverId: driver?.id,
+        companyId: driver?.company?.id,
+      });
+      
       const jobs = await fetchUpcomingJobs({ zoneId: currentZone?.id ?? null });
+      
+      console.log('✅ Upcoming jobs received:', {
+        count: jobs?.length || 0,
+        jobIds: jobs?.map(j => j.id) || [],
+        firstJob: jobs?.[0] ? {
+          id: jobs[0].id,
+          pickup: jobs[0].pickup?.address,
+          status: jobs[0].status,
+        } : null,
+      });
+      
       // Just set jobs - don't calculate distances here
       setUpcomingJobs(jobs);
     } catch (error: any) {
-      console.error('Failed to load upcoming jobs', error);
+      console.error('❌ Failed to load upcoming jobs:', {
+        error: error.message,
+        status: error?.response?.status,
+        data: error?.response?.data,
+      });
       const message =
         error?.response?.data?.message ||
         error?.message ||
@@ -1697,7 +1886,7 @@ const HomeScreen: React.FC = () => {
     } finally {
       setUpcomingJobsLoading(false);
     }
-  }, [shouldShowUpcomingJobs, currentZone?.id]); // ✅ FIXED: Removed calculateJobDistances!
+  }, [shouldShowUpcomingJobs, currentZone?.id, currentZone?.name, driver?.id, driver?.company?.id, isBusy, currentJob, activeShift?.id]); // ✅ Added all dependencies for logging
 
   // Fetch jobs only when zone changes or feature is enabled
   useEffect(() => {
@@ -1908,7 +2097,7 @@ const HomeScreen: React.FC = () => {
         console.log('➡️ Navigating to PaymentCollection');
         navigation.navigate("PaymentCollection", {
           jobId: currentJob.id,
-          amount: currentJob.earningsSoFar || 0,
+          amount: Number(currentJob.earningsSoFar) || 0,
           customerId: currentJob.customer?.id || null,
         });
       } else {
@@ -1991,7 +2180,10 @@ const HomeScreen: React.FC = () => {
       if (success && walkInJob) {
 
         // Build job data for JobContext
-        const activeJobData = {
+
+        // ✅ FIX: Use startWalkInJob to bypass accept/reject screen
+        // This sets job to STARTED immediately and starts the meter
+        startWalkInJob({
           id: walkInJob.id,
           status: 'STARTED',
           pickupAddress: walkInJob.pickupLocation?.address || 'Current Location',
@@ -2002,13 +2194,13 @@ const HomeScreen: React.FC = () => {
           dropoffLongitude: walkInJob.dropoffLocation?.longitude,
           estimatedFare: walkInJob.estimatedFare || 0,
           createdAt: walkInJob.createdAt,
-          customer: null, // Walk-in, no pre-registered customer
-          isWalkIn: true,
-        };
-
-        // ✅ FIX: Use startWalkInJob to bypass accept/reject screen
-        // This sets job to STARTED immediately and starts the meter
-        startWalkInJob(activeJobData);
+          customer: null,
+          passenger: {
+            id: null,
+            name: "",
+            phone: ""
+          }
+        });
         
         Toast.show({
           type: 'success',
@@ -2029,6 +2221,11 @@ const HomeScreen: React.FC = () => {
       }
     } catch (error: any) {
       console.error('❌ Failed to create walk-in job:', error);
+      console.error('📋 Error details:', {
+        status: error.response?.status,
+        data: error.response?.data,
+        message: error.message,
+      });
       Toast.show({
         type: 'error',
         text1: 'Job Creation Failed',
@@ -2078,41 +2275,33 @@ const HomeScreen: React.FC = () => {
             jobId: payload.jobId || internalId,
             status: "INCOMING",
             createdAt: payload.createdAt || new Date().toISOString(),
-            pickupAddress:
-              payload.pickupAddress || pickup.address || "Unknown pickup",
-            pickupLatitude:
-              payload.pickupLatitude ?? pickup.latitude ?? null,
-            pickupLongitude:
-              payload.pickupLongitude ?? pickup.longitude ?? null,
-            dropoffAddress:
-              payload.dropoffAddress || dropoff.address || "Unknown dropoff",
-            dropoffLatitude:
-              payload.dropoffLatitude ?? dropoff.latitude ?? null,
-            dropoffLongitude:
-              payload.dropoffLongitude ?? dropoff.longitude ?? null,
-            estimatedFare:
-              payload.estimatedPrice ?? payload.estimatedFare ?? payload.fare ?? null,
+            pickupAddress: payload.pickupAddress || pickup.address || "Unknown pickup",
+            pickupLatitude: payload.pickupLatitude ?? pickup.latitude ?? null,
+            pickupLongitude: payload.pickupLongitude ?? pickup.longitude ?? null,
+            dropoffAddress: payload.dropoffAddress || dropoff.address || "Unknown dropoff",
+            dropoffLatitude: payload.dropoffLatitude ?? dropoff.latitude ?? null,
+            dropoffLongitude: payload.dropoffLongitude ?? dropoff.longitude ?? null,
+            estimatedFare: payload.estimatedPrice ?? payload.estimatedFare ?? payload.fare ?? null,
             actualFare: payload.fare ?? null,
             distance: payload.distance ?? payload.estimatedDistance ?? null,
             estimatedDuration: payload.estimatedDuration ?? null,
             vehicleType: payload.vehicleType ?? null,
             passenger: payload.customer
               ? {
-                  id: payload.customer.id,
-                  name:
-                    [payload.customer.firstName, payload.customer.lastName]
-                      .filter(Boolean)
-                      .join(" ")
-                      .trim() ||
-                    payload.customer.firstName ||
-                    "Passenger",
-                  phone: payload.customer.phone || "",
-                }
+                id: payload.customer.id,
+                name: [payload.customer.firstName, payload.customer.lastName]
+                  .filter(Boolean)
+                  .join(" ")
+                  .trim() ||
+                  payload.customer.firstName ||
+                  "Passenger",
+                phone: payload.customer.phone || "",
+              }
               : currentJob?.passenger || {
-                  id: null,
-                  name: "Unknown",
-                  phone: "",
-                },
+                id: null,
+                name: "Unknown",
+                phone: "",
+              },
             expiresAt: payload.expiresAt || null,
             countdownMs: payload.expiresAt
               ? Math.max(0, new Date(payload.expiresAt).getTime() - Date.now())
@@ -2120,6 +2309,7 @@ const HomeScreen: React.FC = () => {
             assignmentId: payload.assignmentId || null,
             offerId: payload.offerId || null,
             tariffName: payload.tariff?.name || currentJob?.tariffName || null,
+            customer: undefined
           });
 
           console.log('✅ [CLAIM JOB] Step 6: Incoming job set successfully');
@@ -2266,19 +2456,40 @@ const HomeScreen: React.FC = () => {
       text1: "Ending shift",
       text2: "Shift will end shortly.",
     });
-    endShift()
+    
+    // 🔥 FIX: Pass current location to endShift to avoid using stale/default location
+    const currentLocation = location ? {
+      latitude: location.latitude,
+      longitude: location.longitude,
+      accuracy: location.accuracy,
+      heading: location.heading || 0,
+      speed: location.speed || 0,
+    } : null;
+    
+    console.log('🛑 Ending shift with current location:', currentLocation ? 'using GPS location' : 'will use fallback');
+    
+    endShift(currentLocation)
       .then(stopTracking)
       // ✅ REMOVED: refreshCurrentShift() - endShift already clears the shift state
       // No need to fetch again after ending, this was causing 400 errors
       .catch((error) => {
         console.error("End shift error", error);
+        
+        // Show more detailed error message
+        const errorMessage = error?.response?.data?.message || error?.message || "Unable to end shift.";
+        console.error("End shift detailed error:", {
+          status: error?.response?.status,
+          message: errorMessage,
+          data: error?.response?.data,
+        });
+        
         Toast.show({
           type: "error",
-          text1: "Shift",
-          text2: "Unable to end shift.",
+          text1: "Shift Error",
+          text2: errorMessage,
         });
       });
-  }, [endShift, stopTracking]);
+  }, [endShift, stopTracking, location]);
 
   // ✅ NEW: Prevent app closure when shift is active
   usePreventAppClose({
@@ -2337,7 +2548,7 @@ const HomeScreen: React.FC = () => {
           <DashboardView
             driverName={driver?.firstName ?? undefined}
             companyName={driver?.company?.name ?? undefined}
-            shift={activeShift}
+            shift={activeShift!}
             tariffName={selectedTariff?.name}
             tariff={
               selectedTariff
@@ -2377,6 +2588,7 @@ const HomeScreen: React.FC = () => {
             onClaimUpcomingJob={handleClaimUpcomingJob}
             claimingJobId={claimingJobId}
             hasPendingAction={Boolean(pendingAction)}
+            onStatsLoaded={handleStatsLoaded} // ✅ NEW: Pass stats callback
           />
         </SafeAreaView>
         <Modal
@@ -2537,6 +2749,7 @@ const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
     backgroundColor: Colors.background.base,
+    paddingTop: 40, // Add top padding to prevent overlap with status bar
   },
   container: {
     flex: 1,
@@ -2617,7 +2830,7 @@ const styles = StyleSheet.create({
     flexShrink: 1, // Allow text to shrink if needed
   },
   companyLabel: {
-    color: "#8d95ad",
+    color: "#c5cde0", // ✅ Brighter - was #8d95ad
     fontSize: 12,
     marginTop: 2,
   },
@@ -2637,7 +2850,7 @@ const styles = StyleSheet.create({
     fontWeight: "600",
   },
   statusHint: {
-    color: "#8d95ad",
+    color: "#c5cde0", // ✅ Brighter - was #8d95ad
     fontSize: 11,
     marginTop: 2,
   },
@@ -2980,6 +3193,13 @@ const styles = StyleSheet.create({
     gap: 8,
     flexWrap: "wrap",
   },
+  mapStatusInline: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    flexWrap: "wrap",
+    paddingHorizontal: 4,
+  },
   mapStatusBadge: {
     backgroundColor: "rgba(15,23,42,0.82)",
     borderRadius: 12,
@@ -2994,37 +3214,65 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: "600",
   },
+  mapStatusTextCompact: {
+    color: "#dbeafe",
+    fontSize: 10,
+    fontWeight: "600",
+  },
   mapMotionBadge: {
     borderRadius: 999,
     paddingHorizontal: 10,
     paddingVertical: 4,
     marginLeft: "auto",
   },
+  mapMotionBadgeCompact: {
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
   mapMotionText: {
     color: "#0f172a",
     fontSize: 11,
     fontWeight: "700",
   },
+  mapMotionTextCompact: {
+    color: "#0f172a",
+    fontSize: 10,
+    fontWeight: "700",
+  },
   vehicleMarkerWrapper: {
     alignItems: "center",
     justifyContent: "center",
+    width: 50,
+    height: 50,
   },
   vehicleMarkerGlow: {
     position: "absolute",
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: "rgba(59,130,246,0.25)",
+    width: 50,
+    height: 50,
+    borderRadius: 25,
+    backgroundColor: "rgba(245,180,0,0.4)", // Changed to yellow glow for better visibility
+    shadowColor: "#f5b400",
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.8,
+    shadowRadius: 10,
+    elevation: 10,
   },
   vehicleMarker: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
-    backgroundColor: "#f5b400",
-    borderWidth: 1.5,
-    borderColor: "#0f172a",
+    // ✅ UPDATED: Match RideMap driver marker design (blue circular with navigation icon)
+    backgroundColor: "#3b82f6", // Blue color like active ride screen
+    borderRadius: 20,
+    width: 40,
+    height: 40,
+    borderWidth: 3,
+    borderColor: "#fff", // White border for contrast
     alignItems: "center",
     justifyContent: "center",
+    shadowColor: "#3b82f6",
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.5,
+    shadowRadius: 5,
+    elevation: 8,
   },
   modalBackdrop: {
     flex: 1,
@@ -3048,7 +3296,7 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
   modalSubtitle: {
-    color: "#8d95ad",
+    color: "#c5cde0", // ✅ Brighter - was #8d95ad
     fontSize: 13,
   },
   statusOption: {
@@ -3082,7 +3330,7 @@ const styles = StyleSheet.create({
     fontWeight: "600",
   },
   statusOptionSubtitle: {
-    color: "#8d95ad",
+    color: "#c5cde0", // ✅ Brighter - was #8d95ad
     fontSize: 12,
   },
   statusOptionHint: {
@@ -3134,7 +3382,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   reminderSecondaryText: {
-    color: "#8d95ad",
+    color: "#c5cde0", // ✅ Brighter - was #8d95ad
     fontWeight: "600",
   },
   overviewSection: {
@@ -3166,7 +3414,7 @@ const styles = StyleSheet.create({
     fontSize: 18,
   },
   metricLabel: {
-    color: "#8d95ad",
+    color: "#c5cde0", // ✅ Brighter - was #8d95ad
     fontSize: 13,
   },
   jobStatusCard: {
@@ -3194,10 +3442,10 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   loaderText: {
-    color: "#8d95ad",
+    color: "#c5cde0", // ✅ Brighter - was #8d95ad
   },
   emptyState: {
-    color: "#8d95ad",
+    color: "#c5cde0", // ✅ Brighter - was #8d95ad
   },
   rideCard: {
     backgroundColor: Colors.background.elevated,
@@ -3218,7 +3466,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   rideSubText: {
-    color: "#8d95ad",
+    color: "#c5cde0", // ✅ Brighter - was #8d95ad
     flex: 1,
   },
   rideBadge: {
@@ -3245,7 +3493,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   driverGreeting: {
-    color: "#8d95ad",
+    color: "#c5cde0", // ✅ Brighter - was #8d95ad
     marginTop: 4,
   },
   logoutButton: {
@@ -3325,7 +3573,7 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   vehicleZoneText: {
-    color: "#cbd5f5",
+    color: "#e0e7ff", // ✅ Brighter - was #cbd5f5
     flex: 1,
     fontSize: 13,
   },
@@ -3366,7 +3614,7 @@ const styles = StyleSheet.create({
     color: Colors.accent.highlight,
   },
   vehicleSubtitle: {
-    color: "#8d95ad",
+    color: "#c5cde0", // ✅ Brighter - was #8d95ad
     marginTop: 4,
     fontSize: 13,
   },
@@ -3538,7 +3786,7 @@ const styles = StyleSheet.create({
   },
   todayStatCard: {
     flex: 1,
-    backgroundColor: Colors.background.card,
+    backgroundColor: Colors.background.elevated,
     borderRadius: 12,
     padding: 16,
     alignItems: "center",
@@ -3556,6 +3804,27 @@ const styles = StyleSheet.create({
     fontWeight: "500",
     color: Colors.text.secondary,
     textAlign: "center",
+  },
+  // ✅ NEW: Single combined card styles
+  todayStatsSingleCard: {
+    backgroundColor: Colors.background.elevated,
+    borderRadius: 12,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: Colors.accent.border,
+  },
+  todayStatRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  todayStatTextContainer: {
+    flex: 1,
+  },
+  todayStatDivider: {
+    height: 1,
+    backgroundColor: Colors.accent.border,
+    marginVertical: 12,
   },
 });
 

@@ -17,7 +17,7 @@ type CompanySettingsResponse = {
   data: CompanySettingsPayload;
 };
 
-export type MapProvider = "OPENSTREETMAP" | "GOOGLE_MAPS";
+export type MapProvider = "NATIVE" | "OPENSTREETMAP" | "GOOGLE_MAPS";
 
 export const fetchCompanySettings = async (
   companyId: string
