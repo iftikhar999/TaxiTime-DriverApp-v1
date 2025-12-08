@@ -1,17 +1,17 @@
 import React, { createContext, useCallback, useEffect, useMemo, useState } from 'react';
 import Toast from 'react-native-toast-message';
 import {
-    LocationUpdate,
-    startLocationService,
-    stopLocationService,
-    subscribeToLocations
+  LocationUpdate,
+  startLocationService,
+  stopLocationService,
+  subscribeToLocations
 } from '../native/locationService';
 import { appStateService } from '../services/appStateService'; // ✨ NEW: App state tracking
 import {
-    disconnectDriverSocket,
-    emitAppStateChange,
-    emitDriverLocation,
-    ensureDriverSocket
+  disconnectDriverSocket,
+  emitAppStateChange,
+  emitDriverLocation,
+  ensureDriverSocket
 } from '../services/driverSocket';
 import { requestAllPermissions } from '../utils/permissions';
 import { useAuth } from './AuthContext';
@@ -80,7 +80,10 @@ export const LocationProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         timestamp: new Date(update.timestamp).toLocaleTimeString(),
       });
       
+      // ✅ FORCE UPDATE: Accept all GPS updates regardless of accuracy
+      console.log('✅ SETTING LOCATION STATE:', update);
       setLocation(update);
+      console.log('✅ LOCATION STATE UPDATED');
 
       if (driver?.id) {
         // ✨ NEW: Include app state in location updates
@@ -89,6 +92,7 @@ export const LocationProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           driverId: driver.id,
           appState,
           hasLocation: !!update,
+          accuracy: update.accuracy,
         });
         emitDriverLocation(update, appState);
       } else {
@@ -203,7 +207,6 @@ export const useLocation = (): LocationContextValue => {
     return {
       location: null,
       tracking: false,
-      starting: false,
       startTracking: async () => false,
       stopTracking: async () => {},
     };

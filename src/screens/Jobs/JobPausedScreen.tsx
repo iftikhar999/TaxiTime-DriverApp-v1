@@ -3,11 +3,13 @@
  * 
  * Shows when driver pauses an active ride.
  * Displays job statistics and resume button.
+ * Professional black theme matching ActiveRideScreen.
  */
 
 import { useNavigation } from '@react-navigation/native';
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+    Dimensions,
     ScrollView,
     StyleSheet,
     Text,
@@ -19,6 +21,10 @@ import Toast from 'react-native-toast-message';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { useJob } from '../../context/JobContext';
 import { useShift } from '../../context/ShiftContext';
+import { getWaitingRatePerMinute } from '../../utils/tariffUtils';
+import { openExternalNavigation } from '../../utils/navigationHelper';
+
+const { width } = Dimensions.get('window');
 
 const JobPausedScreen: React.FC = () => {
   const navigation = useNavigation<any>();
@@ -27,7 +33,8 @@ const JobPausedScreen: React.FC = () => {
     timer, 
     pricingBreakdown,
     pauseRecords,
-    resumeJob 
+    resumeJob,
+    status,
   } = useJob();
   
   const { selectedTariff } = useShift();
@@ -41,8 +48,8 @@ const JobPausedScreen: React.FC = () => {
       return;
     }
     
-    const lastPause = pauseRecords[pauseRecords.length - 1];
-    if (!lastPause.pausedAt || lastPause.resumedAt) {
+    const lastPause = pauseRecords.at(-1);
+    if (!lastPause?.pausedAt || lastPause.resumedAt) {
       setCurrentPauseDuration(0);
       return;
     }
@@ -51,7 +58,6 @@ const JobPausedScreen: React.FC = () => {
     const interval = setInterval(() => {
       const elapsed = Math.floor((Date.now() - new Date(lastPause.pausedAt).getTime()) / 1000);
       setCurrentPauseDuration(elapsed);
-      console.log(`⏸️ Current pause duration: ${elapsed}s`);
     }, 1000);
     
     return () => clearInterval(interval);
@@ -59,9 +65,11 @@ const JobPausedScreen: React.FC = () => {
   
   // Format time
   const formatTime = (seconds: number) => {
-    const hrs = Math.floor(seconds / 3600);
-    const mins = Math.floor((seconds % 3600) / 60);
-    const secs = seconds % 60;
+    // ✅ FIX: Floor the input to remove floating point precision issues
+    const totalSeconds = Math.floor(seconds);
+    const hrs = Math.floor(totalSeconds / 3600);
+    const mins = Math.floor((totalSeconds % 3600) / 60);
+    const secs = Math.floor(totalSeconds % 60);
     
     if (hrs > 0) {
       return `${hrs}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
@@ -69,63 +77,103 @@ const JobPausedScreen: React.FC = () => {
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
   
-  // Calculate fare - use actual job data
-  const calculateFare = () => {
-    // Try pricing breakdown first
-    if (pricingBreakdown?.totalCost) {
-      return parseFloat(pricingBreakdown.totalCost);
+  const waitingRate = useMemo(
+    () => getWaitingRatePerMinute(selectedTariff),
+    [selectedTariff]
+  );
+
+  const pickCoordinate = (...values: Array<number | null | undefined>) => {
+    for (const value of values) {
+      if (typeof value === 'number' && Number.isFinite(value)) {
+        return value;
+      }
     }
-    
-    // Try earningsSoFar from timer (most accurate)
-    if (timer?.earningsSoFar) {
-      return timer.earningsSoFar;
+    return null;
+  };
+
+  const dropoffCoordinate = useMemo(() => {
+    if (!currentJob) {
+      return null;
+    }
+    const latitude = pickCoordinate(
+      currentJob.dropoffLatitude,
+      (currentJob as any)?.destination?.latitude
+    );
+    const longitude = pickCoordinate(
+      currentJob.dropoffLongitude,
+      (currentJob as any)?.destination?.longitude
+    );
+    if (latitude === null || longitude === null) {
+      return null;
+    }
+    return { latitude, longitude };
+  }, [currentJob]);
+
+  const dropoffLabel = useMemo(() => {
+    if (!currentJob) {
+      return 'Destination pending';
+    }
+    return (
+      currentJob.dropoffAddress ||
+      (currentJob as any)?.destination?.address ||
+      'Destination pending'
+    );
+  }, [currentJob]);
+
+  const coerceMoneyValue = (value: unknown): number => {
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return value;
+    }
+    if (typeof value === "string") {
+      const parsed = Number.parseFloat(value);
+      return Number.isFinite(parsed) ? parsed : 0;
+    }
+    return 0;
+  };
+
+  // Calculate fare breakdown
+  const fareBreakdown = useMemo(() => {
+    // Try pricing breakdown first
+    if (pricingBreakdown) {
+      return {
+        base: coerceMoneyValue(pricingBreakdown.startingPrice),
+        distance: coerceMoneyValue(pricingBreakdown.distanceCost),
+        time: coerceMoneyValue(pricingBreakdown.durationCost),
+        waiting: coerceMoneyValue(pricingBreakdown.waitingCost),
+        total: coerceMoneyValue(pricingBreakdown.totalCost),
+      };
     }
     
     // Fallback: Calculate from timer and tariff
     if (timer && selectedTariff) {
-      const distanceKm = (timer.distanceMeters || 0) / 1000;
-      const timeMinutes = (timer.elapsedSeconds || 0) / 60;
-      const waitingMinutes = (timer.waitingSeconds || 0) / 60;
+      const base = selectedTariff.baseFare || 0;
+      const distance = ((timer.distanceMeters || 0) / 1000) * (selectedTariff.perKmRate || 0);
+      const time = ((timer.elapsedSeconds || 0) / 60) * (selectedTariff.perMinuteRate || 0);
+      const waiting = ((timer.waitingSeconds || 0) / 60) * waitingRate;
+      const total = base + distance + time + waiting;
       
-      // ✅ FIX: Use correct property names from Tariff interface
-      const baseFare = selectedTariff.baseFare || 0;
-      const distanceFare = distanceKm * (selectedTariff.perKmRate || 0);
-      const timeFare = timeMinutes * (selectedTariff.perMinuteRate || 0);
-      const waitingFare = waitingMinutes * (selectedTariff.waitingTimeRate || 0);
-      
-      const totalFare = baseFare + distanceFare + timeFare + waitingFare;
-      
-      console.log('💰 JobPausedScreen - Fare Calculation:', {
-        baseFare,
-        distanceKm: distanceKm.toFixed(2),
-        distanceFare: distanceFare.toFixed(2),
-        timeMinutes: timeMinutes.toFixed(2),
-        timeFare: timeFare.toFixed(2),
-        waitingMinutes: waitingMinutes.toFixed(2),
-        waitingFare: waitingFare.toFixed(2),
-        totalFare: totalFare.toFixed(2),
-      });
-      
-      return totalFare;
+      return { base, distance, time, waiting, total };
     }
     
-    // Last resort
-    return 0;
-  };
+    return { base: 0, distance: 0, time: 0, waiting: 0, total: 0 };
+  }, [pricingBreakdown, timer, waitingRate, selectedTariff]);
   
-  const currentFare = calculateFare();
-  
-  // ✅ DEBUG: Log values to console
-  useEffect(() => {
-    console.log('📊 JobPausedScreen Stats:', {
-      currentFare: currentFare.toFixed(2),
-      distanceKm: ((timer?.distanceMeters || 0) / 1000).toFixed(2),
-      elapsedSeconds: timer?.elapsedSeconds || 0,
-      waitingSeconds: timer?.waitingSeconds || 0,
-      currentPauseDuration,
-      pauseRecordsCount: pauseRecords?.length || 0,
-    });
-  }, [currentFare, timer, currentPauseDuration, pauseRecords]);
+  const currentFare = Number.isFinite(fareBreakdown.total)
+    ? fareBreakdown.total
+    : 0;
+  const formattedCurrentFare = currentFare.toFixed(2);
+
+  const handleNavigateToDropoff = useCallback(() => {
+    openExternalNavigation(
+      dropoffCoordinate
+        ? {
+            latitude: dropoffCoordinate.latitude,
+            longitude: dropoffCoordinate.longitude,
+            label: dropoffLabel,
+          }
+        : null
+    );
+  }, [dropoffCoordinate, dropoffLabel]);
   
   const handleResume = useCallback(async () => {
     try {
@@ -137,6 +185,7 @@ const JobPausedScreen: React.FC = () => {
         text2: 'Tracking distance and time',
       });
     } catch (error) {
+      console.error('Failed to resume job:', error);
       Toast.show({
         type: 'error',
         text1: 'Failed to Resume',
@@ -144,93 +193,197 @@ const JobPausedScreen: React.FC = () => {
       });
     }
   }, [resumeJob, navigation]);
+
+  useEffect(() => {
+    if (status === 'STARTED' || status === 'ACTIVE') {
+      navigation.navigate('ActiveRide');
+    }
+  }, [status, navigation]);
   
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
+      {/* Professional Header */}
+      <View style={styles.header}>
+        <View style={styles.headerContent}>
+          <Text style={styles.headerTitle}>TRIP PAUSED</Text>
+          <Text style={styles.headerJobId}>#{currentJob?.publicJobId || currentJob?.id || '---'}</Text>
+        </View>
+        <View style={styles.pauseIconContainer}>
+          <Icon name="pause-circle" size={24} color="#ef4444" />
+        </View>
+      </View>
+
+      {/* Professional Status Bar */}
+      <View style={styles.statusBar}>
+        <View style={styles.statusLeft}>
+          <View style={styles.statusIndicator}>
+            <View style={styles.pausedDot} />
+            <Text style={styles.statusText}>PAUSED</Text>
+          </View>
+        </View>
+        <View style={styles.statusRight}>
+          <Text style={styles.statusPauseDuration}>{formatTime(currentPauseDuration)}</Text>
+          <Text style={styles.statusLabel}>PAUSE TIME</Text>
+        </View>
+      </View>
+
       <ScrollView 
         style={styles.scrollView}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
       >
-        {/* Header */}
-        <View style={styles.header}>
-          <Icon name="pause-circle" size={64} color="#f59e0b" />
-          <Text style={styles.headerTitle}>RIDE PAUSED</Text>
-          <Text style={styles.headerSubtitle}>Waiting time is being tracked</Text>
+        {/* Professional Meter Display */}
+        <View style={styles.meterSection}>
+          <View style={styles.meterDisplay}>
+            <View style={styles.meterHeader}>
+              <Text style={styles.meterHeaderText}>CURRENT FARE</Text>
+              <View style={styles.pauseIndicator}>
+                <View style={styles.pauseDot} />
+                <Text style={styles.pauseText}>PAUSED</Text>
+              </View>
+            </View>
+            <Text style={styles.meterFare}>${formattedCurrentFare}</Text>
+          </View>
+
+          {/* Professional Stats Row */}
+          <View style={styles.statsRow}>
+            <View style={styles.statBox}>
+              <Text style={styles.statValue}>
+                {((timer?.distanceMeters || 0) / 1000).toFixed(2)}
+              </Text>
+              <Text style={styles.statUnit}>KM</Text>
+            </View>
+            <View style={[styles.statBox, styles.statBoxBorder]}>
+              <Text style={styles.statValue}>
+                {formatTime(timer?.elapsedSeconds || 0)}
+              </Text>
+              <Text style={styles.statUnit}>TIME</Text>
+            </View>
+            <View style={[styles.statBox, styles.statBoxBorder]}>
+              <Text style={styles.statValue}>
+                {formatTime(timer?.waitingSeconds || 0)}
+              </Text>
+              <Text style={styles.statUnit}>WAIT</Text>
+            </View>
+            <View style={[styles.statBox, styles.statBoxBorder]}>
+              <Text style={styles.statValue}>
+                {formatTime(currentPauseDuration)}
+              </Text>
+              <Text style={styles.statUnit}>PAUSE</Text>
+            </View>
+          </View>
         </View>
-        
-        {/* ✅ NEW: Auto-Resume Info */}
-        <View style={styles.autoResumeInfo}>
-          <Icon name="information" size={20} color="#3b82f6" />
-          <Text style={styles.autoResumeText}>
-            Will auto-resume if you start moving above 5 km/h
+
+        {/* Destination insight */}
+        <View style={styles.destinationCard}>
+          <View style={styles.destinationHeader}>
+            <Text style={styles.destinationTitle}>Destination</Text>
+            {dropoffCoordinate ? (
+              <TouchableOpacity
+                style={styles.destinationNavigate}
+                onPress={handleNavigateToDropoff}
+                activeOpacity={0.85}
+              >
+                <Icon name="navigation-variant" size={16} color="#0f172a" />
+                <Text style={styles.destinationNavigateText}>Navigate</Text>
+              </TouchableOpacity>
+            ) : null}
+          </View>
+          <Text style={styles.destinationAddress} numberOfLines={2}>
+            {dropoffLabel}
           </Text>
-        </View>
-        
-        {/* Stats */}
-        <View style={styles.statsContainer}>
-        <View style={styles.statCard}>
-          <Text style={styles.statLabel}>CURRENT FARE</Text>
-          <Text style={styles.statValue}>${currentFare.toFixed(2)}</Text>
-        </View>
-        
-        <View style={styles.statsRow}>
-          <View style={styles.statSmallCard}>
-            <Icon name="map-marker-distance" size={24} color="#10b981" />
-            <Text style={styles.statSmallLabel}>Distance</Text>
-            <Text style={styles.statSmallValue}>
-              {((timer?.distanceMeters || 0) / 1000).toFixed(2)} km
+          {dropoffCoordinate ? (
+            <Text style={styles.destinationCoords}>
+              {dropoffCoordinate.latitude.toFixed(5)}, {dropoffCoordinate.longitude.toFixed(5)}
             </Text>
-          </View>
-          
-          <View style={styles.statSmallCard}>
-            <Icon name="clock-outline" size={24} color="#3b82f6" />
-            <Text style={styles.statSmallLabel}>Duration</Text>
-            <Text style={styles.statSmallValue}>
-              {formatTime(timer?.elapsedSeconds || 0)}
+          ) : (
+            <Text style={styles.destinationHint}>
+              Set a drop-off from the Home screen to unlock navigation shortcuts.
             </Text>
+          )}
+        </View>
+
+        {/* Fare Breakdown Table */}
+        <View style={styles.breakdownSection}>
+          <Text style={styles.breakdownHeader}>FARE BREAKDOWN</Text>
+          <View style={styles.breakdownTable}>
+            <View style={styles.breakdownRow}>
+              <Text style={styles.breakdownLabel}>Base Fare</Text>
+              <Text style={styles.breakdownValue}>${fareBreakdown.base.toFixed(2)}</Text>
+            </View>
+            <View style={[styles.breakdownRow, styles.breakdownRowBorder]}>
+              <Text style={styles.breakdownLabel}>
+                Distance ({((timer?.distanceMeters || 0) / 1000).toFixed(2)} km)
+              </Text>
+              <Text style={styles.breakdownValue}>${fareBreakdown.distance.toFixed(2)}</Text>
+            </View>
+            <View style={[styles.breakdownRow, styles.breakdownRowBorder]}>
+              <Text style={styles.breakdownLabel}>
+                Time ({formatTime(timer?.elapsedSeconds || 0)})
+              </Text>
+              <Text style={styles.breakdownValue}>${fareBreakdown.time.toFixed(2)}</Text>
+            </View>
+            <View style={[styles.breakdownRow, styles.breakdownRowBorder]}>
+              <Text style={styles.breakdownLabel}>
+                Waiting ({formatTime(timer?.waitingSeconds || 0)})
+              </Text>
+              <Text style={styles.breakdownValue}>${fareBreakdown.waiting.toFixed(2)}</Text>
+            </View>
+            <View style={[styles.breakdownRow, styles.breakdownTotal]}>
+              <Text style={styles.breakdownLabelTotal}>TOTAL</Text>
+              <Text style={styles.breakdownValueTotal}>${fareBreakdown.total.toFixed(2)}</Text>
+            </View>
           </View>
         </View>
-        
-        <View style={styles.statsRow}>
-          <View style={styles.statSmallCard}>
-            <Icon name="timer-sand" size={24} color="#f59e0b" />
-            <Text style={styles.statSmallLabel}>Waiting</Text>
-            <Text style={styles.statSmallValue}>
-              {formatTime(timer?.waitingSeconds || 0)}
-            </Text>
-          </View>
-          
-          <View style={styles.statSmallCard}>
-            <Icon name="pause" size={24} color="#f59e0b" />
-            <Text style={styles.statSmallLabel}>Current Pause</Text>
-            <Text style={styles.statSmallValue}>
-              {formatTime(currentPauseDuration)}
-            </Text>
+
+        {/* Trip Info */}
+        <View style={styles.tripSection}>
+          <Text style={styles.tripHeader}>TRIP INFORMATION</Text>
+          <View style={styles.tripInfo}>
+            <View style={styles.tripRow}>
+              <Icon name="account" size={16} color="#666" />
+              <Text style={styles.tripLabel}>Passenger</Text>
+              <Text style={styles.tripValue}>
+                {currentJob?.passenger?.name || 'N/A'}
+              </Text>
+            </View>
+            {currentJob?.passenger?.phone && (
+              <View style={[styles.tripRow, styles.tripRowBorder]}>
+                <Icon name="phone" size={16} color="#666" />
+                <Text style={styles.tripLabel}>Phone</Text>
+                <Text style={styles.tripValue}>{currentJob.passenger.phone}</Text>
+              </View>
+            )}
+            <View style={[styles.tripRow, styles.tripRowBorder]}>
+              <Icon name="map-marker" size={16} color="#666" />
+              <Text style={styles.tripLabel}>Destination</Text>
+              <Text style={styles.tripValue} numberOfLines={2}>
+                {currentJob?.dropoffAddress || 'N/A'}
+              </Text>
+            </View>
           </View>
         </View>
-      </View>
-        
-        {/* Passenger Info */}
-        <View style={styles.passengerCard}>
-          <Text style={styles.passengerLabel}>PASSENGER</Text>
-          <Text style={styles.passengerName}>
-            {currentJob?.passenger?.name || 'Passenger'}
+
+        {/* Auto-Resume Info */}
+        <View style={styles.infoBox}>
+          <Icon name="information-outline" size={20} color="#888" />
+          <Text style={styles.infoText}>
+            Trip will auto-resume if you start moving
           </Text>
-        </View>
-        
-        {/* Resume Button */}
-        <View style={styles.buttonContainer}>
-          <TouchableOpacity
-            style={styles.resumeButton}
-            onPress={handleResume}
-            activeOpacity={0.8}
-          >
-            <Icon name="play-circle" size={32} color="#fff" />
-            <Text style={styles.resumeText}>Resume Ride</Text>
-          </TouchableOpacity>
         </View>
       </ScrollView>
+
+      {/* Professional Resume Button */}
+      <View style={styles.buttonContainer}>
+        <TouchableOpacity
+          style={styles.resumeButton}
+          onPress={handleResume}
+          activeOpacity={0.7}
+        >
+          <Icon name="play" size={20} color="#000" />
+          <Text style={styles.resumeText}>RESUME TRIP</Text>
+        </TouchableOpacity>
+      </View>
     </SafeAreaView>
   );
 };
@@ -238,139 +391,369 @@ const JobPausedScreen: React.FC = () => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0f172a',
+    backgroundColor: '#000000',
+    paddingTop: 40,
+  },
+  // Professional Header
+  header: {
+    backgroundColor: '#000000',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#333',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  headerContent: {
+    flex: 1,
+  },
+  headerTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#fff',
+    letterSpacing: 1,
+  },
+  headerJobId: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#666',
+    marginTop: 2,
+    fontFamily: 'Courier New',
+  },
+  pauseIconContainer: {
+    width: 40,
+    height: 40,
+    borderRadius: 4,
+    backgroundColor: '#1a1a1a',
+    borderWidth: 1,
+    borderColor: '#333',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  // Professional Status Bar
+  statusBar: {
+    backgroundColor: '#1a1a1a',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#333',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  statusLeft: {
+    flex: 1,
+  },
+  statusIndicator: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  pausedDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#ef4444',
+  },
+  statusText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#fff',
+    letterSpacing: 0.5,
+  },
+  statusRight: {
+    alignItems: 'flex-end',
+  },
+  statusPauseDuration: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#ef4444',
+    fontFamily: 'Courier New',
+    lineHeight: 16,
+  },
+  statusLabel: {
+    fontSize: 8,
+    fontWeight: '600',
+    color: '#666',
+    marginTop: 2,
+    letterSpacing: 0.5,
   },
   scrollView: {
     flex: 1,
   },
   scrollContent: {
-    flexGrow: 1,
-    paddingBottom: 20,
+    paddingBottom: 8,
   },
-  header: {
-    alignItems: 'center',
-    paddingVertical: 30,
-    gap: 12,
+  // Professional Meter Section
+  meterSection: {
+    backgroundColor: '#1a1a1a',
+    margin: 10,
+    borderRadius: 8,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: '#333',
   },
-  headerTitle: {
-    fontSize: 28,
-    fontWeight: '800',
-    color: '#f59e0b',
-    letterSpacing: 2,
+  destinationCard: {
+    backgroundColor: '#111322',
+    marginHorizontal: 10,
+    marginBottom: 10,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#2a2f3f',
+    padding: 14,
+    gap: 6,
   },
-  headerSubtitle: {
-    fontSize: 14,
-    color: '#94a3b8',
-  },
-  autoResumeInfo: {
+  destinationHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
-    marginHorizontal: 20,
-    marginBottom: 8,
-    padding: 16,
-    backgroundColor: 'rgba(59, 130, 246, 0.1)',
-    borderRadius: 12,
-    borderLeftWidth: 4,
-    borderLeftColor: '#3b82f6',
+    justifyContent: 'space-between',
   },
-  autoResumeText: {
-    flex: 1,
-    fontSize: 13,
-    color: '#94a3b8',
-    lineHeight: 18,
+  destinationTitle: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#f5b400',
+    letterSpacing: 0.6,
   },
-  statsContainer: {
-    padding: 20,
-    gap: 16,
-  },
-  statCard: {
-    backgroundColor: '#1e293b',
-    borderRadius: 20,
-    padding: 32,
+  destinationNavigate: {
+    flexDirection: 'row',
     alignItems: 'center',
-    borderWidth: 2,
-    borderColor: '#f59e0b',
+    gap: 6,
+    backgroundColor: '#facc15',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 999,
   },
-  statLabel: {
+  destinationNavigateText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#0f172a',
+  },
+  destinationAddress: {
     fontSize: 14,
+    color: '#ffffff',
     fontWeight: '600',
+  },
+  destinationCoords: {
+    fontSize: 12,
     color: '#94a3b8',
-    letterSpacing: 1,
-    marginBottom: 8,
+    fontFamily: 'Courier New',
   },
-  statValue: {
+  destinationHint: {
+    fontSize: 12,
+    color: '#8d95ad',
+  },
+  meterDisplay: {
+    padding: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#333',
+  },
+  meterHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  meterHeaderText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#888',
+    letterSpacing: 1.5,
+  },
+  pauseIndicator: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  pauseDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#ef4444',
+  },
+  pauseText: {
+    fontSize: 9,
+    fontWeight: '700',
+    color: '#ef4444',
+    letterSpacing: 0.5,
+  },
+  meterFare: {
     fontSize: 48,
-    fontWeight: '800',
+    fontWeight: '700',
     color: '#fbbf24',
+    fontFamily: 'Courier New',
+    letterSpacing: -1,
   },
+  // Professional Stats Row
   statsRow: {
     flexDirection: 'row',
-    gap: 16,
+    paddingVertical: 12,
+    paddingHorizontal: 8,
   },
-  statSmallCard: {
+  statBox: {
     flex: 1,
-    backgroundColor: '#1e293b',
-    borderRadius: 16,
-    padding: 20,
     alignItems: 'center',
-    gap: 8,
   },
-  statSmallLabel: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: '#94a3b8',
-    textTransform: 'uppercase',
+  statBoxBorder: {
+    borderLeftWidth: 1,
+    borderLeftColor: '#333',
   },
-  statSmallValue: {
-    fontSize: 18,
+  statValue: {
+    fontSize: 16,
     fontWeight: '700',
-    color: '#f1f5f9',
+    color: '#fff',
+    fontFamily: 'Courier New',
   },
-  passengerCard: {
-    marginHorizontal: 20,
-    marginTop: 12,
-    marginBottom: 12,
-    padding: 20,
-    backgroundColor: '#1e293b',
-    borderRadius: 16,
-    alignItems: 'center',
+  statUnit: {
+    fontSize: 8,
+    fontWeight: '600',
+    color: '#666',
+    marginTop: 4,
+    letterSpacing: 1,
   },
-  passengerLabel: {
+  // Fare Breakdown Section
+  breakdownSection: {
+    backgroundColor: '#1a1a1a',
+    margin: 10,
+    marginTop: 0,
+    borderRadius: 8,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: '#333',
+  },
+  breakdownHeader: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#888',
+    letterSpacing: 1.5,
+    padding: 12,
+    paddingBottom: 8,
+  },
+  breakdownTable: {
+    paddingHorizontal: 12,
+    paddingBottom: 12,
+  },
+  breakdownRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingVertical: 8,
+  },
+  breakdownRowBorder: {
+    borderTopWidth: 1,
+    borderTopColor: '#333',
+  },
+  breakdownLabel: {
+    fontSize: 12,
+    color: '#999',
+    flex: 1,
+  },
+  breakdownValue: {
     fontSize: 12,
     fontWeight: '600',
-    color: '#94a3b8',
-    letterSpacing: 1,
-    marginBottom: 8,
+    color: '#fff',
+    fontFamily: 'Courier New',
   },
-  passengerName: {
-    fontSize: 20,
-    fontWeight: '700',
-    color: '#f1f5f9',
-  },
-  buttonContainer: {
-    paddingHorizontal: 20,
+  breakdownTotal: {
+    borderTopWidth: 2,
+    borderTopColor: '#fbbf24',
+    marginTop: 4,
     paddingTop: 12,
-    paddingBottom: 20,
+  },
+  breakdownLabelTotal: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#fff',
+    letterSpacing: 1,
+  },
+  breakdownValueTotal: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#fbbf24',
+    fontFamily: 'Courier New',
+  },
+  // Trip Information Section
+  tripSection: {
+    backgroundColor: '#1a1a1a',
+    margin: 10,
+    marginTop: 0,
+    borderRadius: 8,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: '#333',
+  },
+  tripHeader: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#888',
+    letterSpacing: 1.5,
+    padding: 12,
+    paddingBottom: 8,
+  },
+  tripInfo: {
+    paddingHorizontal: 12,
+    paddingBottom: 12,
+  },
+  tripRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 8,
+  },
+  tripRowBorder: {
+    borderTopWidth: 1,
+    borderTopColor: '#333',
+  },
+  tripLabel: {
+    fontSize: 11,
+    color: '#666',
+    width: 80,
+  },
+  tripValue: {
+    flex: 1,
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#fff',
+  },
+  // Info Box
+  infoBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginHorizontal: 10,
+    marginTop: 0,
+    padding: 12,
+    backgroundColor: '#1a1a1a',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#333',
+  },
+  infoText: {
+    flex: 1,
+    fontSize: 11,
+    color: '#888',
+    lineHeight: 16,
+  },
+  // Professional Button
+  buttonContainer: {
+    padding: 10,
+    backgroundColor: '#000000',
+    borderTopWidth: 1,
+    borderTopColor: '#333',
   },
   resumeButton: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 12,
-    backgroundColor: '#22c55e',
-    paddingVertical: 20,
-    borderRadius: 16,
-    shadowColor: '#22c55e',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 8,
+    gap: 8,
+    backgroundColor: '#fbbf24',
+    paddingVertical: 16,
+    borderRadius: 4,
   },
   resumeText: {
-    fontSize: 20,
+    fontSize: 14,
     fontWeight: '700',
-    color: '#fff',
+    color: '#000',
+    letterSpacing: 1,
   },
 });
 

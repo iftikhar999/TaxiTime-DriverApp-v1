@@ -1,6 +1,16 @@
 import React, { useMemo, useState } from "react";
-import { Alert, Linking, Platform, StyleSheet, Text, TouchableOpacity, View, ViewStyle } from "react-native";
-import MapView, { Marker, PROVIDER_GOOGLE, Region } from "react-native-maps";
+import {
+  ActionSheetIOS,
+  Alert,
+  Linking,
+  Platform,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+  ViewStyle,
+} from "react-native";
+import MapView, { Marker, Polyline, PROVIDER_GOOGLE, Region } from "react-native-maps";
 import MapViewDirections from "react-native-maps-directions";
 import MaterialCommunityIcons from "react-native-vector-icons/MaterialCommunityIcons";
 import { Colors } from "../theme/colors";
@@ -17,6 +27,9 @@ interface JobOfferMapProps {
   style?: ViewStyle;
   height?: number;
   showNavigationButtons?: boolean;
+  showAlternateRoute?: boolean;
+  onRouteStats?: (stats: { distanceKm: number; durationMin: number }) => void;
+  onExpandMap?: () => void;
 }
 
 const hasValidCoordinate = (point?: CoordinateInput): point is {
@@ -67,12 +80,15 @@ const buildRegion = (points: Array<{ latitude: number; longitude: number }>): Re
   };
 };
 
-const JobOfferMap: React.FC<JobOfferMapProps> = ({ 
-  pickup, 
-  driver, 
-  style, 
+const JobOfferMap: React.FC<JobOfferMapProps> = ({
+  pickup,
+  driver,
+  style,
   height = 280,
-  showNavigationButtons = false 
+  showNavigationButtons = false,
+  showAlternateRoute = false,
+  onRouteStats,
+  onExpandMap,
 }) => {
   const [routeDistance, setRouteDistance] = useState<number | null>(null);
   const [routeDuration, setRouteDuration] = useState<number | null>(null);
@@ -91,6 +107,23 @@ const JobOfferMap: React.FC<JobOfferMapProps> = ({
   const region = useMemo(() => buildRegion(points), [points]);
 
   const showMap = hasValidCoordinate(pickup) && hasValidCoordinate(driver);
+
+  const alternateRoute = useMemo(() => {
+    if (!showAlternateRoute || !hasValidCoordinate(pickup) || !hasValidCoordinate(driver)) {
+      return null;
+    }
+
+    const midLat = (pickup.latitude! + driver.latitude!) / 2;
+    const midLng = (pickup.longitude! + driver.longitude!) / 2;
+    const offsetLat = (pickup.latitude! - driver.latitude!) * 0.1;
+    const offsetLng = (pickup.longitude! - driver.longitude!) * -0.1;
+
+    return [
+      { latitude: driver.latitude!, longitude: driver.longitude! },
+      { latitude: midLat + offsetLat, longitude: midLng + offsetLng },
+      { latitude: pickup.latitude!, longitude: pickup.longitude! },
+    ];
+  }, [pickup, driver, showAlternateRoute]);
 
   const openGoogleMaps = () => {
     if (!hasValidCoordinate(pickup)) {
@@ -121,11 +154,11 @@ const JobOfferMap: React.FC<JobOfferMapProps> = ({
     }
   };
 
-  const openWaze = () => {
-    if (!hasValidCoordinate(pickup)) {
-      Alert.alert("Error", "Pickup location not available");
-      return;
-    }
+const openWaze = () => {
+  if (!hasValidCoordinate(pickup)) {
+    Alert.alert("Error", "Pickup location not available");
+    return;
+  }
 
     const url = `https://waze.com/ul?ll=${pickup.latitude},${pickup.longitude}&navigate=yes`;
 
@@ -147,10 +180,57 @@ const JobOfferMap: React.FC<JobOfferMapProps> = ({
       });
   };
 
+  const openAppleMaps = () => {
+    if (!hasValidCoordinate(pickup)) {
+      Alert.alert("Error", "Pickup location not available");
+      return;
+    }
+    const url = `http://maps.apple.com/?daddr=${pickup.latitude},${pickup.longitude}&dirflg=d`;
+    Linking.openURL(url).catch(() => Alert.alert("Error", "Could not open Apple Maps"));
+  };
+
+  const handleNavigationSelection = () => {
+    if (!hasValidCoordinate(pickup)) {
+      Alert.alert("Error", "Pickup location not available");
+      return;
+    }
+
+    if (Platform.OS === "ios") {
+      ActionSheetIOS.showActionSheetWithOptions(
+        {
+          title: "Navigate with",
+          options: ["Google Maps", "Waze", "Apple Maps", "Cancel"],
+          cancelButtonIndex: 3,
+        },
+        (buttonIndex) => {
+          if (buttonIndex === 0) openGoogleMaps();
+          if (buttonIndex === 1) openWaze();
+          if (buttonIndex === 2) openAppleMaps();
+        }
+      );
+    } else {
+      Alert.alert("Choose Navigation App", undefined, [
+        { text: "Google Maps", onPress: openGoogleMaps },
+        { text: "Waze", onPress: openWaze },
+        { text: "Cancel", style: "cancel" },
+      ]);
+    }
+  };
+
   return (
     <View style={[styles.container, { height }, style]}>
       {showMap ? (
         <>
+          {onExpandMap && (
+            <TouchableOpacity
+              style={styles.expandButton}
+              activeOpacity={0.85}
+              onPress={onExpandMap}
+            >
+              <MaterialCommunityIcons name="fullscreen" size={14} color="#fff" />
+              <Text style={styles.expandButtonText}>Maximize</Text>
+            </TouchableOpacity>
+          )}
           <MapView
             provider={PROVIDER_GOOGLE}
             style={StyleSheet.absoluteFill}
@@ -206,11 +286,24 @@ const JobOfferMap: React.FC<JobOfferMapProps> = ({
               onReady={(result) => {
                 setRouteDistance(result.distance);
                 setRouteDuration(result.duration);
+                onRouteStats?.({
+                  distanceKm: result.distance,
+                  durationMin: result.duration,
+                });
               }}
               onError={(errorMessage) => {
                 console.warn("Directions Error:", errorMessage);
               }}
             />
+
+            {alternateRoute && (
+              <Polyline
+                coordinates={alternateRoute}
+                strokeColor="#cbd5f5"
+                strokeWidth={3}
+                lineDashPattern={[6, 6]}
+              />
+            )}
           </MapView>
 
           {/* Route Info Overlay */}
@@ -235,21 +328,12 @@ const JobOfferMap: React.FC<JobOfferMapProps> = ({
           {showNavigationButtons && (
             <View style={styles.navigationButtons}>
               <TouchableOpacity
-                style={[styles.navButton, styles.googleMapsButton]}
-                onPress={openGoogleMaps}
-                activeOpacity={0.8}
+                style={styles.navButton}
+                onPress={handleNavigationSelection}
+                activeOpacity={0.85}
               >
-                <MaterialCommunityIcons name="google-maps" size={18} color="#fff" />
-                <Text style={styles.navButtonText}>Google Maps</Text>
-              </TouchableOpacity>
-              
-              <TouchableOpacity
-                style={[styles.navButton, styles.wazeButton]}
-                onPress={openWaze}
-                activeOpacity={0.8}
-              >
-                <MaterialCommunityIcons name="waze" size={18} color="#fff" />
-                <Text style={styles.navButtonText}>Waze</Text>
+                <MaterialCommunityIcons name="directions" size={18} color="#fff" />
+                <Text style={styles.navButtonText}>Navigation Apps</Text>
               </TouchableOpacity>
             </View>
           )}
@@ -271,6 +355,24 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.background.elevated,
     borderWidth: 1,
     borderColor: Colors.accent.border,
+  },
+  expandButton: {
+    position: "absolute",
+    top: 12,
+    right: 12,
+    zIndex: 2,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: "rgba(0,0,0,0.6)",
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  expandButtonText: {
+    color: "#fff",
+    fontSize: 11,
+    fontWeight: "600",
   },
   driverMarker: {
     backgroundColor: "#f5b400",
@@ -329,31 +431,21 @@ const styles = StyleSheet.create({
   navigationButtons: {
     position: "absolute",
     bottom: 12,
-    left: 12,
     right: 12,
-    flexDirection: "row",
-    gap: 10,
   },
   navButton: {
-    flex: 1,
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center",
     gap: 6,
-    paddingVertical: 10,
+    paddingVertical: 8,
     paddingHorizontal: 14,
-    borderRadius: 12,
+    borderRadius: 999,
+    backgroundColor: "rgba(0,0,0,0.75)",
     shadowColor: "#000",
     shadowOpacity: 0.2,
     shadowOffset: { width: 0, height: 2 },
     shadowRadius: 4,
-    elevation: 4,
-  },
-  googleMapsButton: {
-    backgroundColor: "#4285F4",
-  },
-  wazeButton: {
-    backgroundColor: "#00D7FF",
+    elevation: 5,
   },
   navButtonText: {
     color: "#fff",
@@ -363,4 +455,3 @@ const styles = StyleSheet.create({
 });
 
 export default JobOfferMap;
-

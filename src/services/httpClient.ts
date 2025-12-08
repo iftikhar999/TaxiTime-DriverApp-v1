@@ -12,16 +12,41 @@ httpClient.interceptors.request.use(async (config) => {
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
   }
+  
+  // 🔍 LOG EVERY REQUEST
+  console.log('🌐 HTTP REQUEST:', {
+    method: config.method?.toUpperCase(),
+    baseURL: config.baseURL,
+    url: config.url,
+    fullURL: `${config.baseURL}${config.url}`,
+  });
+  
   return config;
 });
 
 // Response interceptor for error handling
 httpClient.interceptors.response.use(
   (response) => {
-    // Return successful responses as-is
+    // ✅ LOG SUCCESS
+    console.log('✅ HTTP SUCCESS:', {
+      status: response.status,
+      url: response.config.url,
+    });
     return response;
   },
   async (error) => {
+    // 🔴 LOG ERRORS IN DETAIL
+    console.error('🔴 HTTP ERROR:', {
+      message: error.message,
+      url: error.config?.url,
+      baseURL: error.config?.baseURL,
+      fullURL: error.config ? `${error.config.baseURL}${error.config.url}` : 'N/A',
+      status: error.response?.status,
+      statusText: error.response?.statusText,
+      errorData: error.response?.data,
+      isNetworkError: error.message === 'Network Error',
+    });
+    
     // Don't auto-logout for status update API calls - let the app handle gracefully
     const isStatusUpdate = error.config?.url?.includes("/shift/status");
     const isAuthentication = error.config?.url?.includes("/auth/");

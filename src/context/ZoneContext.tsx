@@ -33,7 +33,20 @@ type ZoneContextValue = {
   setManualTariff: (tariffId: string | null) => void;
 };
 
-const ZoneContext = createContext<ZoneContextValue | undefined>(undefined);
+const defaultZoneContext: ZoneContextValue = {
+  currentZone: null,
+  zoneTariffs: [],
+  recommendedTariffId: null,
+  autoSelectedTariffId: null,
+  manualTariffId: null,
+  loading: false,
+  lastUpdatedAt: null,
+  error: null,
+  forceRefresh: async () => {},
+  setManualTariff: () => {},
+};
+
+const ZoneContext = createContext<ZoneContextValue>(defaultZoneContext);
 
 export const ZoneProvider: React.FC<{ children: React.ReactNode }> = ({
   children,
@@ -213,7 +226,9 @@ export const ZoneProvider: React.FC<{ children: React.ReactNode }> = ({
         setLoading(false);
       }
     } else {
-      setError("No current zone to refresh");
+      // ✅ Don't set error when no zone - this is normal before shift starts
+      console.log("ℹ️ No current zone detected yet - zone will be detected when shift starts");
+      setError(null); // Clear any previous errors
     }
   }, [currentZone]);
 
@@ -255,10 +270,4 @@ export const ZoneProvider: React.FC<{ children: React.ReactNode }> = ({
   return <ZoneContext.Provider value={value}>{children}</ZoneContext.Provider>;
 };
 
-export const useZone = (): ZoneContextValue => {
-  const context = useContext(ZoneContext);
-  if (!context) {
-    throw new Error("useZone must be used within ZoneProvider");
-  }
-  return context;
-};
+export const useZone = (): ZoneContextValue => useContext(ZoneContext);

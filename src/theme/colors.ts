@@ -36,10 +36,10 @@ export const Colors = {
     border: '#2d3240'
   },
   text: {
-    primary: '#0b1b3f',
-    secondary: '#3b4a6b',
+    primary: '#ffffff',
+    secondary: '#a0aec0',
     muted: '#6c7b9d',
-    inverse: '#ffffff'
+    inverse: 'white'
   },
   divider: '#d9e1f2'
 } as const;

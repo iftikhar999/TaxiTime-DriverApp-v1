@@ -85,13 +85,29 @@ export const logout = async (): Promise<void> => {
     console.log("🚪 Starting logout process...");
     try {
       const driverState = driverStatusManager.getDriverState();
-      await endDriverShift(driverState?.location ?? null);
+      const locationPayload = driverState?.location || null;
+      
+      console.log("📍 Ending shift with location:", locationPayload ? "from driver state" : "will use fallback");
+      await endDriverShift(locationPayload);
       console.log("✅ Shift ended via REST API");
-    } catch (apiError) {
-      console.warn(
-        "⚠️ Failed to end shift via API, continuing with socket cleanup:",
-        apiError
-      );
+    } catch (apiError: any) {
+      // Check if it's a 400 error about no active shift
+      if (apiError.response?.status === 400) {
+        const errorMessage = apiError.response?.data?.message || "";
+        if (errorMessage.includes("No active shift")) {
+          console.log("ℹ️ No active shift to end - continuing with logout");
+        } else {
+          console.warn(
+            "⚠️ Failed to end shift via API (400):",
+            errorMessage
+          );
+        }
+      } else {
+        console.warn(
+          "⚠️ Failed to end shift via API, continuing with socket cleanup:",
+          apiError.message || apiError
+        );
+      }
     }
 
     // 2. End shift via socket and set status to OFFLINE (triggers socket events to dispatch)

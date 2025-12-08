@@ -1,26 +1,40 @@
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  ActivityIndicator,
-  Alert,
-  Linking,
-  Platform,
-  SafeAreaView,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View
+    ActivityIndicator,
+    Alert,
+    Dimensions,
+    Linking,
+    Platform,
+    Modal,
+    SafeAreaView,
+    ScrollView,
+    StyleSheet,
+    Text,
+    TouchableOpacity,
+    View
 } from 'react-native';
 import MCIcon from 'react-native-vector-icons/MaterialCommunityIcons';
 import JobOfferMap from '../../components/JobOfferMap';
 import { useJob } from '../../context/JobContext';
 import { useLocation } from '../../context/LocationContext';
 import { AppStackParamList } from '../../navigation/RootNavigator';
-import { Colors } from '../../theme/colors';
 import { RideSummary } from '../../types/rides';
 
 const COUNTDOWN_MS = 30_000;
+const { width } = Dimensions.get('window');
+const THEME = {
+  background: '#040b1d',
+  surface: '#0f172a',
+  mutedSurface: '#111f37',
+  border: '#1d2942',
+  text: '#f8fafc',
+  muted: '#94a3b8',
+  accent: '#fbbf24',
+  info: '#38bdf8',
+  danger: '#ef4444',
+  success: '#22c55e',
+};
 
 const makeCoordinate = (
   latitude: number | null | undefined,
@@ -50,6 +64,11 @@ const JobOfferScreen: React.FC<JobOfferScreenProps> = ({ navigation, route }) =>
   const [countdown, setCountdown] = useState(COUNTDOWN_MS);
   const [hasAccepted, setHasAccepted] = useState(false);
   const [hasCalled, setHasCalled] = useState(false);
+  const [mapModalVisible, setMapModalVisible] = useState(false);
+  const [routeStats, setRouteStats] = useState<{ distanceKm: number | null; durationMin: number | null }>({
+    distanceKm: null,
+    durationMin: null,
+  });
 
   useEffect(() => {
     if (job) {
@@ -114,8 +133,14 @@ const JobOfferScreen: React.FC<JobOfferScreenProps> = ({ navigation, route }) =>
     typeof currentJob?.estimatedDuration === 'number' && Number.isFinite(currentJob.estimatedDuration)
       ? Math.max(currentJob.estimatedDuration, 0)
       : null;
-  const distanceLabel = `${distanceValue.toFixed(1)} km`;
-  const etaLabel = estimatedDuration ? `${Math.round(estimatedDuration)} min` : 'N/A';
+  const distanceLabel =
+    routeStats.distanceKm !== null ? `${routeStats.distanceKm.toFixed(1)} km` : `${distanceValue.toFixed(1)} km`;
+  const etaLabel =
+    routeStats.durationMin !== null
+      ? `${Math.round(routeStats.durationMin)} min`
+      : estimatedDuration
+      ? `${Math.round(estimatedDuration)} min`
+      : 'N/A';
 
   const handleReject = useCallback(() => {
     rejectJob('manual');
@@ -129,7 +154,7 @@ const JobOfferScreen: React.FC<JobOfferScreenProps> = ({ navigation, route }) =>
   }, [acceptJob]);
 
   const handleContinueToJob = useCallback(() => {
-    navigation.navigate('JobProgress');
+    navigation.navigate('EnhancedJobTracking');
   }, [navigation]);
 
   const handleCallRider = useCallback(() => {
@@ -186,7 +211,7 @@ const JobOfferScreen: React.FC<JobOfferScreenProps> = ({ navigation, route }) =>
     return (
       <SafeAreaView style={styles.safeArea}>
         <View style={styles.loaderWrap}>
-          <ActivityIndicator color={Colors.accent.highlight} />
+          <ActivityIndicator color={THEME.accent} />
           <Text style={styles.loaderText}>Loading job details…</Text>
         </View>
       </SafeAreaView>
@@ -205,28 +230,53 @@ const JobOfferScreen: React.FC<JobOfferScreenProps> = ({ navigation, route }) =>
   const riderPhone = currentJob.passenger?.phone || 'Not available';
   const vehicleLabel = currentJob.vehicleType || 'Vehicle not assigned';
   const notes = currentJob.notes?.trim();
+  const jobCode = currentJob.publicJobId || currentJob.jobId || currentJob.id || 'JOB';
+  const displayJobCode =
+    jobCode.length > 12 ? `${jobCode.slice(0, 6)}…${jobCode.slice(-4)}` : jobCode;
+  const estimatedFareLabel = `NZD${estimatedFareValue.toFixed(2)}`;
 
   return (
     <SafeAreaView style={styles.safeArea}>
       <ScrollView contentContainerStyle={styles.content} bounces={false}>
-        <View style={styles.headerRow}>
-          <View style={styles.headerTitleContainer}>
-            <Text style={styles.headerIcon}>🚕</Text>
-            <Text style={styles.headerTitle}>New Ride Request</Text>
+        <View style={styles.heroCard}>
+          <View style={styles.heroTextBlock}>
+            <Text style={styles.heroLabel}>Incoming Ride</Text>
+            <Text style={styles.heroJob}>{displayJobCode}</Text>
+            <Text style={styles.heroMeta}>{pickupAddress}</Text>
           </View>
           <View style={styles.countdownPill}>
-            <MCIcon name="timer-sand" size={14} color="#f5b400" />
+            <MCIcon name="timer-sand" size={16} color={THEME.accent} />
             <Text style={styles.countdownText}>{formattedCountdown}</Text>
           </View>
         </View>
 
-        <JobOfferMap
-          pickup={pickupCoordinate}
-          driver={driverCoordinate}
-          style={styles.map}
-          height={hasAccepted ? 300 : 230}
-          showNavigationButtons={hasAccepted}
-        />
+        <View style={styles.mapCard}>
+          <JobOfferMap
+            pickup={pickupCoordinate}
+            driver={driverCoordinate}
+            style={styles.map}
+            height={hasAccepted ? 300 : 230}
+            showNavigationButtons={hasAccepted}
+          />
+        </View>
+
+        <View style={styles.quickStatsRow}>
+          <View style={styles.quickStat}>
+            <MCIcon name="map-marker-distance" size={20} color={THEME.info} />
+            <Text style={styles.quickStatLabel}>Distance</Text>
+            <Text style={styles.quickStatValue}>{distanceLabel}</Text>
+          </View>
+          <View style={styles.quickStat}>
+            <MCIcon name="clock-outline" size={20} color={THEME.accent} />
+            <Text style={styles.quickStatLabel}>Pickup ETA</Text>
+            <Text style={styles.quickStatValue}>{etaLabel}</Text>
+          </View>
+          <View style={styles.quickStat}>
+            <MCIcon name="cash" size={20} color={THEME.success} />
+            <Text style={styles.quickStatLabel}>Est. Fare</Text>
+            <Text style={styles.quickStatValue}>{estimatedFareLabel}</Text>
+          </View>
+        </View>
 
         {!hasAccepted ? (
           <View style={styles.buttonRow}>
@@ -346,6 +396,32 @@ const JobOfferScreen: React.FC<JobOfferScreenProps> = ({ navigation, route }) =>
           </View>
         ) : null}
       </ScrollView>
+
+      <Modal
+        visible={mapModalVisible}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setMapModalVisible(false)}
+      >
+        <View style={styles.mapModalBackdrop}>
+          <View style={styles.mapModalContent}>
+            <View style={styles.mapModalHeader}>
+              <Text style={styles.mapModalTitle}>Full Navigation View</Text>
+              <TouchableOpacity onPress={() => setMapModalVisible(false)}>
+                <MCIcon name="close-circle" size={24} color="#fff" />
+              </TouchableOpacity>
+            </View>
+            <JobOfferMap
+              pickup={pickupCoordinate}
+              driver={driverCoordinate}
+              height={Math.max(360, width)}
+              showNavigationButtons
+              showAlternateRoute
+              onRouteStats={(stats) => setRouteStats(stats)}
+            />
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 };
@@ -353,7 +429,8 @@ const JobOfferScreen: React.FC<JobOfferScreenProps> = ({ navigation, route }) =>
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: Colors.background.base
+    backgroundColor: THEME.background,
+    paddingTop: 32
   },
   content: {
     padding: 20,
@@ -367,50 +444,87 @@ const styles = StyleSheet.create({
     gap: 12
   },
   loaderText: {
-    color: '#8d95ad'
+    color: THEME.muted
   },
-  headerRow: {
+  heroCard: {
+    backgroundColor: THEME.surface,
+    borderRadius: 20,
+    padding: 20,
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'center',
-    flexWrap: 'wrap',
-    gap: 12
+    alignItems: 'flex-start',
+    borderWidth: 1,
+    borderColor: THEME.border
   },
-  headerTitleContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
+  heroTextBlock: {
     flex: 1,
-    minWidth: 180
+    paddingRight: 12
   },
-  headerIcon: {
+  heroLabel: {
+    color: THEME.muted,
+    textTransform: 'uppercase',
+    fontSize: 12,
+    letterSpacing: 1,
+    marginBottom: 6
+  },
+  heroJob: {
+    color: THEME.text,
     fontSize: 24,
-    lineHeight: 28
-  },
-  headerTitle: {
-    color: Colors.text.inverse,
-    fontSize: 20,
     fontWeight: '700',
-    lineHeight: 24,
-    flexShrink: 1
+    marginBottom: 6
+  },
+  heroMeta: {
+    color: THEME.muted,
+    fontSize: 14
   },
   countdownPill: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
-    backgroundColor: 'rgba(245,180,0,0.15)',
-    borderRadius: 16,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    minWidth: 50
+    gap: 6,
+    backgroundColor: THEME.mutedSurface,
+    borderRadius: 999,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderWidth: 1,
+    borderColor: THEME.border
   },
   countdownText: {
-    color: '#f5b400',
+    color: THEME.accent,
     fontWeight: '700',
-    fontSize: 13
+    fontSize: 14
+  },
+  mapCard: {
+    borderRadius: 20,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: THEME.border
   },
   map: {
     width: '100%'
+  },
+  quickStatsRow: {
+    flexDirection: 'row',
+    gap: 12
+  },
+  quickStat: {
+    flex: 1,
+    backgroundColor: THEME.mutedSurface,
+    borderRadius: 16,
+    paddingVertical: 14,
+    paddingHorizontal: 12,
+    borderWidth: 1,
+    borderColor: THEME.border,
+    gap: 6
+  },
+  quickStatLabel: {
+    color: THEME.muted,
+    fontSize: 12,
+    letterSpacing: 0.5
+  },
+  quickStatValue: {
+    color: THEME.text,
+    fontSize: 18,
+    fontWeight: '600'
   },
   buttonRow: {
     flexDirection: 'row',
@@ -418,7 +532,7 @@ const styles = StyleSheet.create({
   },
   acceptButton: {
     flex: 1,
-    backgroundColor: '#22c55e',
+    backgroundColor: THEME.success,
     borderRadius: 26,
     paddingVertical: 16,
     flexDirection: 'row',
@@ -428,7 +542,7 @@ const styles = StyleSheet.create({
   },
   rejectButton: {
     flex: 1,
-    backgroundColor: '#f97316',
+    backgroundColor: THEME.danger,
     borderRadius: 26,
     paddingVertical: 16,
     flexDirection: 'row',
@@ -441,10 +555,10 @@ const styles = StyleSheet.create({
     fontWeight: '700'
   },
   card: {
-    backgroundColor: Colors.background.elevated,
+    backgroundColor: THEME.surface,
     borderRadius: 18,
     borderWidth: 1,
-    borderColor: Colors.accent.border,
+    borderColor: THEME.border,
     padding: 18,
     gap: 14
   },
@@ -454,12 +568,12 @@ const styles = StyleSheet.create({
     alignItems: 'center'
   },
   cardTitle: {
-    color: Colors.text.inverse,
+    color: THEME.text,
     fontWeight: '700',
     fontSize: 16
   },
   fareHighlight: {
-    color: '#f5b400',
+    color: THEME.accent,
     fontWeight: '700',
     fontSize: 16
   },
@@ -480,13 +594,13 @@ const styles = StyleSheet.create({
     gap: 4
   },
   detailLabel: {
-    color: '#8d95ad',
+    color: THEME.muted,
     fontSize: 12,
     textTransform: 'uppercase',
     letterSpacing: 0.6
   },
   detailValue: {
-    color: Colors.text.inverse,
+    color: THEME.text,
     fontSize: 14,
     lineHeight: 20
   },
@@ -501,17 +615,17 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: 6,
-    backgroundColor: 'rgba(79,136,255,0.1)',
+    backgroundColor: THEME.mutedSurface,
     borderRadius: 14,
     paddingVertical: 10
   },
   chipText: {
-    color: '#dfe3f3',
+    color: THEME.text,
     fontSize: 13,
     fontWeight: '600'
   },
   sectionTitle: {
-    color: '#8d95ad',
+    color: THEME.muted,
     fontSize: 13,
     fontWeight: '600',
     textTransform: 'uppercase',
@@ -523,17 +637,22 @@ const styles = StyleSheet.create({
     gap: 10
   },
   infoText: {
-    color: Colors.text.inverse,
+    color: THEME.text,
     fontSize: 15,
     flex: 1
   },
   notesText: {
-    color: '#dfe3f3',
+    color: THEME.text,
     fontSize: 14,
     lineHeight: 20
   },
   acceptedContainer: {
-    gap: 12
+    gap: 12,
+    backgroundColor: THEME.surface,
+    borderRadius: 18,
+    padding: 18,
+    borderWidth: 1,
+    borderColor: THEME.border
   },
   acceptedBanner: {
     flexDirection: 'row',
@@ -547,18 +666,18 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(34, 197, 94, 0.3)'
   },
   acceptedText: {
-    color: '#22c55e',
+    color: THEME.success,
     fontSize: 16,
     fontWeight: '700'
   },
   navHintText: {
-    color: '#94a3b8',
+    color: THEME.muted,
     fontSize: 13,
     textAlign: 'center',
     marginTop: 4
   },
   continueButton: {
-    backgroundColor: '#3b82f6',
+    backgroundColor: THEME.info,
     borderRadius: 26,
     paddingVertical: 16,
     flexDirection: 'row',
@@ -568,7 +687,7 @@ const styles = StyleSheet.create({
     marginTop: 8
   },
   callButton: {
-    backgroundColor: '#22c55e',
+    backgroundColor: THEME.success,
     borderRadius: 12,
     paddingVertical: 14,
     flexDirection: 'row',
@@ -588,7 +707,7 @@ const styles = StyleSheet.create({
     fontSize: 15
   },
   recallButton: {
-    backgroundColor: '#f97316',
+    backgroundColor: THEME.danger,
     borderRadius: 12,
     paddingVertical: 14,
     flexDirection: 'row',
@@ -596,7 +715,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
     marginTop: 8,
-    shadowColor: '#f97316',
+    shadowColor: THEME.danger,
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.3,
     shadowRadius: 4,
@@ -606,6 +725,30 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontWeight: '700',
     fontSize: 15
+  },
+  mapModalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.65)',
+    justifyContent: 'center',
+    padding: 16
+  },
+  mapModalContent: {
+    backgroundColor: THEME.surface,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: THEME.border,
+    padding: 16,
+    gap: 12
+  },
+  mapModalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center'
+  },
+  mapModalTitle: {
+    color: THEME.text,
+    fontSize: 16,
+    fontWeight: '700'
   }
 });
 

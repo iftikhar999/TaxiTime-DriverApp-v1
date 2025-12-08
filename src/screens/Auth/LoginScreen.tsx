@@ -1,15 +1,15 @@
-import React, { useState } from 'react';
-import { AxiosError } from 'axios';
-import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
-import { AuthStackParamList } from '../../navigation/RootNavigator';
-import { Colors } from '../../theme/colors';
-import Typography from '../../components/design/Typography';
+import { AxiosError } from 'axios';
+import React, { useState } from 'react';
+import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import Toast from 'react-native-toast-message';
 import FormTextInput from '../../components/design/FormTextInput';
+import Typography from '../../components/design/Typography';
 import PrimaryButton from '../../components/design/buttons/PrimaryButton';
 import { DEFAULT_DRIVER_CREDENTIALS } from '../../config/environment';
 import { useAuth } from '../../context/AuthContext';
-import Toast from 'react-native-toast-message';
+import { AuthStackParamList } from '../../navigation/RootNavigator';
+import { Colors } from '../../theme/colors';
 import { requestAllPermissions } from '../../utils/permissions';
 
 export type LoginScreenProps = NativeStackScreenProps<AuthStackParamList, 'Login'>;
@@ -54,7 +54,7 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ navigation }) => {
           <View style={styles.logoWrap}>
             <Text style={styles.logoText}>TT</Text>
           </View>
-          <Typography variant="titleLarge" color={Colors.text.primary}>
+          <Typography variant="titleLarge" color={Colors.text.inverse}>
             Driver sign in
           </Typography>
           <Typography style={styles.subtitle}>
@@ -102,7 +102,8 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ navigation }) => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: Colors.surface.default
+    backgroundColor: '#0f1118', // Black theme background
+    paddingTop: 40
   },
   content: {
     padding: 24,
@@ -116,47 +117,49 @@ const styles = StyleSheet.create({
     width: 72,
     height: 72,
     borderRadius: 18,
-    backgroundColor: Colors.primary[100],
+    backgroundColor: '#2d3240', // Dark background for logo
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 16
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: '#3d4350'
   },
   logoText: {
-    color: Colors.primary[700],
+    color: '#f5b400', // Highlight color
     fontSize: 24,
     fontWeight: '700'
   },
   subtitle: {
     marginTop: 12,
-    color: Colors.text.secondary
+    color: '#a0aec0' // Bright secondary text
   },
   credentialsCard: {
     marginTop: 20,
-    backgroundColor: Colors.surface.card,
+    backgroundColor: '#1a1d26', // Dark elevated background
     borderRadius: 16,
     padding: 16,
     borderWidth: 1,
-    borderColor: Colors.divider
+    borderColor: '#2d3240' // Dark border
   },
   credentialsTitle: {
     fontSize: 14,
     fontWeight: '600',
-    color: Colors.text.secondary,
+    color: '#a0aec0', // Bright secondary text
     marginBottom: 8
   },
   credentialsValue: {
     fontSize: 14,
-    color: Colors.text.primary
+    color: '#ffffff' // White text
   },
   form: {
-    backgroundColor: Colors.surface.card,
+    backgroundColor: '#1a1d26', // Dark elevated background
     borderRadius: 20,
     padding: 24,
     borderWidth: 1,
-    borderColor: Colors.divider,
-    shadowColor: '#0b1b3f',
+    borderColor: '#2d3240', // Dark border
+    shadowColor: '#000000',
     shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.08,
+    shadowOpacity: 0.3,
     shadowRadius: 20,
     elevation: 6
   },
@@ -165,7 +168,7 @@ const styles = StyleSheet.create({
     alignItems: 'center'
   },
   secondaryText: {
-    color: Colors.primary[600],
+    color: '#f5b400', // Highlight color
     fontWeight: '600'
   }
 });

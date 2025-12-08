@@ -197,7 +197,25 @@ class ForegroundServiceController {
       console.error('❌ Failed to clear driver data:', error);
     }
   }
+
+  /**
+   * 🚀 Bring the app window to the foreground (Android)
+   */
+  async bringToForeground(): Promise<void> {
+    if (Platform.OS !== 'android') {
+      return;
+    }
+
+    if (!ForegroundServiceModule?.bringToForeground) {
+      return;
+    }
+
+    try {
+      await ForegroundServiceModule.bringToForeground();
+    } catch (error) {
+      console.error('❌ Failed to bring app to foreground:', error);
+    }
+  }
 }
 
 export const ForegroundService = new ForegroundServiceController();
-

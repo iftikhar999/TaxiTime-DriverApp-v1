@@ -1,7 +1,9 @@
 import { useNavigation } from '@react-navigation/native';
-import React, { useCallback, useEffect, useMemo, useRef } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+    ActivityIndicator,
     Dimensions,
+    Modal,
     SafeAreaView,
     ScrollView,
     StyleSheet,
@@ -11,13 +13,29 @@ import {
 } from 'react-native';
 import Toast from 'react-native-toast-message';
 import MCIcon from 'react-native-vector-icons/MaterialCommunityIcons';
+import JobOfferMap from '../../components/JobOfferMap';
 import RideMap from '../../components/RideMap';
 import { JobStatus, useJob } from '../../context/JobContext';
 import { useLocation } from '../../context/LocationContext';
 import { useShift } from '../../context/ShiftContext';
 import { calculateDistance } from '../../utils/distance';
+import { getWaitingRatePerMinute } from '../../utils/tariffUtils';
 
 const { width } = Dimensions.get('window');
+
+const THEME = {
+  background: '#040b1d',
+  surface: '#0f172a',
+  mutedSurface: '#111f37',
+  border: '#1d2942',
+  text: '#f8fafc',
+  muted: '#94a3b8',
+  accent: '#fbbf24',
+  success: '#22c55e',
+  info: '#38bdf8',
+  warning: '#f97316',
+  danger: '#ef4444',
+};
 
 const makeCoordinate = (
   latitude: number | null | undefined,
@@ -65,6 +83,10 @@ const EnhancedJobTrackingScreen: React.FC = () => {
     () => makeCoordinate(location?.latitude ?? null, location?.longitude ?? null),
     [location?.latitude, location?.longitude]
   );
+  const shouldEscalateToActiveRide = useMemo(
+    () => ['STARTED', 'ACTIVE', 'REACHED'].includes(status),
+    [status]
+  );
 
   useEffect(() => {
     if (
@@ -109,21 +131,31 @@ const EnhancedJobTrackingScreen: React.FC = () => {
   // This screen is ONLY for: ACCEPTED, ON_THE_WAY, ARRIVED
   // Once STARTED, switch to the full tracking screen
   useEffect(() => {
-    if (['STARTED', 'ACTIVE', 'REACHED'].includes(status)) {
-      console.log('✅ Job started - navigating to ActiveRideScreen');
+    if (shouldEscalateToActiveRide) {
       const timer = setTimeout(() => {
         navigation.navigate('ActiveRide');
-      }, 300); // Small delay to allow state to settle
+      }, 50);
       return () => clearTimeout(timer);
     }
-  }, [status, navigation]);
+  }, [navigation, shouldEscalateToActiveRide]);
 
   // Calculate current fare
+  const waitingRate = useMemo(
+    () => getWaitingRatePerMinute(selectedTariff),
+    [selectedTariff]
+  );
+
+  const [showMapModal, setShowMapModal] = useState(false);
+  const [routeStats, setRouteStats] = useState<{ distanceKm: number | null; durationMin: number | null }>({
+    distanceKm: null,
+    durationMin: null,
+  });
+
   const fareBreakdown = useMemo(() => {
     const base = selectedTariff?.baseFare ?? 0;
     const distanceFare = (selectedTariff?.perKmRate ?? 0) * ((timer?.distanceMeters ?? 0) / 1000);
     const timeFare = (selectedTariff?.perMinuteRate ?? 0) * ((timer?.elapsedSeconds ?? 0) / 60);
-    const waitingFare = (selectedTariff?.waitingTimeRate ?? 0) * ((timer?.waitingSeconds ?? 0) / 60);
+    const waitingFare = waitingRate * ((timer?.waitingSeconds ?? 0) / 60);
     const total = base + distanceFare + timeFare + waitingFare;
 
     return {
@@ -138,7 +170,7 @@ const EnhancedJobTrackingScreen: React.FC = () => {
     selectedTariff?.baseFare,
     selectedTariff?.perKmRate,
     selectedTariff?.perMinuteRate,
-    selectedTariff?.waitingTimeRate,
+    waitingRate,
     timer?.distanceMeters,
     timer?.elapsedSeconds,
     timer?.waitingSeconds,
@@ -209,24 +241,123 @@ const EnhancedJobTrackingScreen: React.FC = () => {
   const vehicleLabel = currentJob?.vehicleType || 'Vehicle not assigned';
   const tariffName = selectedTariff?.name || 'Standard';
   const jobReference = currentJob?.publicJobId || currentJob?.id || 'N/A';
+  const displayJobReference = jobReference.length > 14
+    ? `${jobReference.slice(0, 8)}…${jobReference.slice(-4)}`
+    : jobReference;
   const routeCoordinates = useMemo(
     () => routePoints.map(({ latitude, longitude }) => ({ latitude, longitude })),
     [routePoints]
   );
+  const pickupAddress = currentJob?.pickupAddress?.trim() || 'Pickup not provided';
+  const dropoffAddress = currentJob?.dropoffAddress?.trim() || 'Dropoff not provided';
+  const isPrePickupPhase = useMemo(
+    () => ['ASSIGNED', 'ACCEPTED', 'ON_THE_WAY', 'ARRIVED'].includes(status),
+    [status]
+  );
+  const hasPickupAndDriver = !!pickupCoordinate && !!driverCoordinate;
+
+  const distanceToPickupKm = useMemo(() => {
+    if (routeStats.distanceKm !== null) {
+      return routeStats.distanceKm;
+    }
+    if (pickupCoordinate && driverCoordinate) {
+      return calculateDistance(
+        driverCoordinate.latitude,
+        driverCoordinate.longitude,
+        pickupCoordinate.latitude,
+        pickupCoordinate.longitude
+      );
+    }
+    return null;
+  }, [routeStats.distanceKm, pickupCoordinate, driverCoordinate]);
+
+  const etaToPickupMin = useMemo(() => {
+    if (routeStats.durationMin !== null) {
+      return routeStats.durationMin;
+    }
+    if (distanceToPickupKm !== null) {
+      const averageSpeedKmh = 35;
+      return (distanceToPickupKm / averageSpeedKmh) * 60;
+    }
+    return null;
+  }, [routeStats.durationMin, distanceToPickupKm]);
+
+  const estimatedDistanceLabel = useMemo(() => {
+    if (isPrePickupPhase) {
+      if (distanceToPickupKm === null) return 'Calculating…';
+      return `${distanceToPickupKm.toFixed(1)} km`;
+    }
+    if (typeof currentJob?.distance === 'number' && Number.isFinite(currentJob.distance)) {
+      return `${currentJob.distance.toFixed(1)} km`;
+    }
+    if (typeof currentJob?.estimatedDistance === 'number' && Number.isFinite(currentJob.estimatedDistance)) {
+      return `${currentJob.estimatedDistance.toFixed(1)} km`;
+    }
+    return '—';
+  }, [isPrePickupPhase, distanceToPickupKm, currentJob?.distance, currentJob?.estimatedDistance]);
+
+  const estimatedDurationLabel = useMemo(() => {
+    if (isPrePickupPhase) {
+      if (etaToPickupMin === null) return 'Calculating…';
+      return `${Math.round(etaToPickupMin)} min`;
+    }
+    if (typeof currentJob?.estimatedDuration === 'number' && Number.isFinite(currentJob.estimatedDuration)) {
+      return `${Math.round(currentJob.estimatedDuration)} min`;
+    }
+    return 'N/A';
+  }, [isPrePickupPhase, etaToPickupMin, currentJob?.estimatedDuration]);
+  const estimatedFareDisplay = (
+    currentJob?.estimatedFare ??
+    currentJob?.estimatedPrice ??
+    currentJob?.fare ??
+    0
+  ).toFixed(2);
+
+  if (shouldEscalateToActiveRide) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <View style={styles.handoffCard}>
+          <ActivityIndicator color={THEME.accent} size="large" />
+          <Text style={styles.handoffTitle}>Starting Meter…</Text>
+          <Text style={styles.handoffSubtitle}>
+            Switching you to the Active Ride screen. Hang tight.
+          </Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
 
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView style={styles.content} contentContainerStyle={styles.contentContainer}>
-        {/* Header */}
-        <View style={styles.header}>
-          <Text style={styles.headerTitle}>Job Tracking</Text>
-          <Text style={styles.headerSubtitle}>{jobReference}</Text>
+        <View style={styles.heroCard}>
+          <View style={styles.heroTextBlock}>
+            <Text style={styles.heroLabel}>Active Assignment</Text>
+            <Text style={styles.heroJob}>{displayJobReference}</Text>
+            <Text style={styles.heroMeta}>{pickupAddress}</Text>
+          </View>
+          <View style={[styles.statusChip, getStatusPillStyle(status)]}>
+            <MCIcon name={getStatusIcon(status)} size={20} color="#fff" />
+            <Text style={styles.statusChipText}>{getStatusLabel(status)}</Text>
+          </View>
         </View>
 
-        {/* Status Banner */}
-        <View style={[styles.statusBanner, getStatusBannerStyle(status)]}>
-          <MCIcon name={getStatusIcon(status)} size={24} color="#fff" />
-          <Text style={styles.statusBannerText}>{getStatusLabel(status)}</Text>
+        <View style={styles.quickStatsRow}>
+          <View style={styles.quickStat}>
+            <MCIcon name="map-marker-distance" size={20} color={THEME.info} />
+            <Text style={styles.quickStatLabel}>Distance</Text>
+            <Text style={styles.quickStatValue}>{estimatedDistanceLabel}</Text>
+          </View>
+          <View style={styles.quickStat}>
+            <MCIcon name="clock-outline" size={20} color={THEME.accent} />
+            <Text style={styles.quickStatLabel}>ETA</Text>
+            <Text style={styles.quickStatValue}>{estimatedDurationLabel}</Text>
+          </View>
+          <View style={styles.quickStat}>
+            <MCIcon name="cash" size={20} color={THEME.success} />
+            <Text style={styles.quickStatLabel}>Est. Fare</Text>
+            <Text style={styles.quickStatValue}>${estimatedFareDisplay}</Text>
+          </View>
         </View>
 
         {/* Tariff Card */}
@@ -237,10 +368,10 @@ const EnhancedJobTrackingScreen: React.FC = () => {
           </View>
           {selectedTariff && (
             <View style={styles.tariffDetails}>
-              <Text style={styles.tariffDetail}>S: ${(selectedTariff.baseFare ?? 0).toFixed(2)}</Text>
-              <Text style={styles.tariffDetail}>D: ${(selectedTariff.perKmRate ?? 0).toFixed(2)}/km</Text>
-              <Text style={styles.tariffDetail}>T: ${(selectedTariff.perMinuteRate ?? 0).toFixed(2)}/min</Text>
-              <Text style={styles.tariffDetail}>W: ${(selectedTariff.waitingTimeRate ?? 0).toFixed(2)}/min</Text>
+              <Text style={styles.tariffDetail}>S: ${(Number(selectedTariff.baseFare) || 0).toFixed(2)}</Text>
+              <Text style={styles.tariffDetail}>D: ${(Number(selectedTariff.perKmRate) || 0).toFixed(2)}/km</Text>
+              <Text style={styles.tariffDetail}>T: ${(Number(selectedTariff.perMinuteRate) || 0).toFixed(2)}/min</Text>
+              <Text style={styles.tariffDetail}>W: ${(Number(waitingRate) || 0).toFixed(2)}/min</Text>
             </View>
           )}
         </View>
@@ -335,31 +466,85 @@ const EnhancedJobTrackingScreen: React.FC = () => {
             <MCIcon name="map-marker" size={20} color="#22c55e" />
             <View style={styles.tripInfo}>
               <Text style={styles.tripLabel}>PICKUP</Text>
-              <Text style={styles.tripValue}>{currentJob?.pickupAddress || 'Not provided'}</Text>
+              <Text style={styles.tripValue}>{pickupAddress}</Text>
             </View>
           </View>
           <View style={styles.tripRow}>
             <MCIcon name="flag" size={20} color="#f87171" />
             <View style={styles.tripInfo}>
               <Text style={styles.tripLabel}>DROPOFF</Text>
-              <Text style={styles.tripValue}>{currentJob?.dropoffAddress || 'Not provided'}</Text>
+              <Text style={styles.tripValue}>{dropoffAddress}</Text>
             </View>
           </View>
           <View style={styles.tripMeta}>
             <View style={styles.tripMetaItem}>
               <MCIcon name="map-marker-distance" size={16} color="#60a5fa" />
               <Text style={styles.tripMetaText}>
-                Planned {currentJob?.distance ? currentJob.distance.toFixed(1) : '0.0'} km
+                {isPrePickupPhase
+                  ? distanceToPickupKm === null
+                    ? 'Distance: calculating…'
+                    : `To pickup ${distanceToPickupKm.toFixed(1)} km`
+                  : `Planned ${currentJob?.distance ? currentJob.distance.toFixed(1) : '0.0'} km`}
               </Text>
             </View>
             <View style={styles.tripMetaItem}>
               <MCIcon name="clock-outline" size={16} color="#38bdf8" />
               <Text style={styles.tripMetaText}>
-                ETA {currentJob?.estimatedDuration ? Math.round(currentJob.estimatedDuration) : 'N/A'} min
+                {isPrePickupPhase
+                  ? etaToPickupMin === null
+                    ? 'ETA: calculating…'
+                    : `ETA ${Math.round(etaToPickupMin)} min`
+                  : `ETA ${currentJob?.estimatedDuration ? Math.round(currentJob.estimatedDuration) : 'N/A'} min`}
               </Text>
             </View>
           </View>
         </View>
+
+        {isPrePickupPhase && hasPickupAndDriver && (
+          <View style={styles.navigationCard}>
+            <View style={styles.navigationHeader}>
+              <View>
+                <Text style={styles.navigationTitle}>Pickup Navigation</Text>
+                <Text style={styles.navigationSubtitle}>Smart routes & live distance</Text>
+              </View>
+              <TouchableOpacity
+                style={styles.mapExpandButton}
+                activeOpacity={0.8}
+                onPress={() => setShowMapModal(true)}
+              >
+                <MCIcon name="fullscreen" size={16} color="#fff" />
+                <Text style={styles.mapExpandText}>Full Map</Text>
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.navigationStatsRow}>
+              <View style={styles.navigationChip}>
+                <MCIcon name="map-marker-distance" size={16} color={THEME.info} />
+                <Text style={styles.navigationChipLabel}>Distance</Text>
+                <Text style={styles.navigationChipValue}>
+                  {distanceToPickupKm === null ? '—' : `${distanceToPickupKm.toFixed(1)} km`}
+                </Text>
+              </View>
+              <View style={styles.navigationChip}>
+                <MCIcon name="clock-outline" size={16} color={THEME.accent} />
+                <Text style={styles.navigationChipLabel}>ETA</Text>
+                <Text style={styles.navigationChipValue}>
+                  {etaToPickupMin === null ? '—' : `${Math.round(etaToPickupMin)} min`}
+                </Text>
+              </View>
+            </View>
+
+            <JobOfferMap
+              pickup={pickupCoordinate}
+              driver={driverCoordinate}
+              height={220}
+              showNavigationButtons
+              showAlternateRoute
+              onRouteStats={(stats) => setRouteStats(stats)}
+              onExpandMap={() => setShowMapModal(true)}
+            />
+          </View>
+        )}
 
         {/* Rider Info */}
         <View style={styles.riderCard}>
@@ -378,17 +563,18 @@ const EnhancedJobTrackingScreen: React.FC = () => {
           </View>
         </View>
 
-        {/* Map */}
-        <View style={styles.mapContainer}>
-          <RideMap
-            pickup={pickupCoordinate}
-            dropoff={showDropoffOnMap ? dropoffCoordinate : undefined}
-            driver={driverCoordinate}
-            route={routeCoordinates}
-            style={styles.map}
-            height={250}
-          />
-        </View>
+        {!isPrePickupPhase && (
+          <View style={styles.mapContainer}>
+            <RideMap
+              pickup={pickupCoordinate}
+              dropoff={showDropoffOnMap ? dropoffCoordinate : undefined}
+              driver={driverCoordinate}
+              route={routeCoordinates}
+              style={styles.map}
+              height={250}
+            />
+          </View>
+        )}
 
         {/* Action Buttons */}
         <View style={styles.actionsContainer}>
@@ -404,6 +590,32 @@ const EnhancedJobTrackingScreen: React.FC = () => {
           )}
         </View>
       </ScrollView>
+
+      <Modal
+        visible={showMapModal}
+        animationType="slide"
+        onRequestClose={() => setShowMapModal(false)}
+        transparent
+      >
+        <View style={styles.mapModalBackdrop}>
+          <View style={styles.mapModalContent}>
+            <View style={styles.mapModalHeader}>
+              <Text style={styles.mapModalTitle}>Full Navigation View</Text>
+              <TouchableOpacity onPress={() => setShowMapModal(false)}>
+                <MCIcon name="close-circle" size={24} color="#fff" />
+              </TouchableOpacity>
+            </View>
+            <JobOfferMap
+              pickup={pickupCoordinate}
+              driver={driverCoordinate}
+              height={Math.max(320, width)}
+              showNavigationButtons
+              showAlternateRoute
+              onRouteStats={(stats) => setRouteStats(stats)}
+            />
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 };
@@ -446,22 +658,22 @@ const getStatusIcon = (status: JobStatus): string => {
   }
 };
 
-const getStatusBannerStyle = (status: JobStatus) => {
+const getStatusPillStyle = (status: JobStatus) => {
   switch (status) {
     case 'ASSIGNED':
     case 'ACCEPTED':
-      return styles.statusBannerGreen;
+      return { backgroundColor: THEME.success };
     case 'ON_THE_WAY':
-      return styles.statusBannerBlue;
+      return { backgroundColor: THEME.info };
     case 'ARRIVED':
-      return styles.statusBannerCyan;
+      return { backgroundColor: THEME.warning };
     case 'STARTED':
     case 'ACTIVE':
-      return styles.statusBannerOrange;
+      return { backgroundColor: THEME.accent };
     case 'REACHED':
-      return styles.statusBannerPurple;
+      return { backgroundColor: '#a855f7' };
     default:
-      return styles.statusBannerGray;
+      return { backgroundColor: '#64748b' };
   }
 };
 
@@ -549,53 +761,119 @@ const renderActionButtons = (
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0a0e1a',
+    backgroundColor: THEME.background,
+    paddingTop: 36,
   },
   content: {
     flex: 1,
   },
   contentContainer: {
-    padding: 16,
-    paddingBottom: 40,
+    padding: 20,
+    paddingBottom: 48,
   },
-  header: {
-    marginBottom: 16,
+  heroCard: {
+    backgroundColor: THEME.surface,
+    borderRadius: 18,
+    padding: 20,
+    marginBottom: 18,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    borderWidth: 1,
+    borderColor: THEME.border,
   },
-  headerTitle: {
+  heroTextBlock: {
+    flex: 1,
+    paddingRight: 12,
+  },
+  heroLabel: {
+    color: THEME.muted,
+    fontSize: 12,
+    letterSpacing: 1,
+    marginBottom: 6,
+    textTransform: 'uppercase',
+  },
+  heroJob: {
+    color: THEME.text,
     fontSize: 24,
-    fontWeight: 'bold',
-    color: '#f8fafc',
+    fontWeight: '700',
+    marginBottom: 6,
   },
-  headerSubtitle: {
+  heroMeta: {
+    color: THEME.muted,
     fontSize: 14,
-    color: '#94a3b8',
-    marginTop: 4,
   },
-  statusBanner: {
+  statusChip: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderRadius: 12,
-    marginBottom: 16,
+    gap: 6,
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
   },
-  statusBannerGreen: { backgroundColor: '#16a34a' },
-  statusBannerBlue: { backgroundColor: '#3b82f6' },
-  statusBannerCyan: { backgroundColor: '#06b6d4' },
-  statusBannerOrange: { backgroundColor: '#f97316' },
-  statusBannerPurple: { backgroundColor: '#a855f7' },
-  statusBannerGray: { backgroundColor: '#64748b' },
-  statusBannerText: {
-    fontSize: 16,
+  statusChipText: {
+    color: '#fff',
+    fontWeight: '700',
+    fontSize: 13,
+  },
+  quickStatsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 12,
+    marginBottom: 18,
+  },
+  quickStat: {
+    flex: 1,
+    backgroundColor: THEME.mutedSurface,
+    borderRadius: 14,
+    paddingVertical: 14,
+    paddingHorizontal: 12,
+    borderWidth: 1,
+    borderColor: THEME.border,
+    alignItems: 'flex-start',
+    gap: 6,
+  },
+  quickStatLabel: {
+    color: THEME.muted,
+    fontSize: 11,
+    letterSpacing: 0.5,
+    marginTop: 6,
+  },
+  quickStatValue: {
+    color: THEME.text,
+    fontSize: 18,
     fontWeight: '600',
-    color: '#ffffff',
+    marginTop: 4,
+  },
+  handoffCard: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+    backgroundColor: THEME.surface,
+    margin: 24,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: THEME.border,
+    gap: 12,
+  },
+  handoffTitle: {
+    color: THEME.text,
+    fontSize: 18,
+    fontWeight: '700',
+  },
+  handoffSubtitle: {
+    color: THEME.muted,
+    fontSize: 14,
+    textAlign: 'center',
   },
   tariffCard: {
-    backgroundColor: '#1e293b',
+    backgroundColor: THEME.surface,
     borderRadius: 12,
     padding: 16,
     marginBottom: 16,
+    borderWidth: 1,
+    borderColor: THEME.border,
   },
   tariffHeader: {
     flexDirection: 'row',
@@ -618,10 +896,12 @@ const styles = StyleSheet.create({
     color: '#cbd5e1',
   },
   fareCard: {
-    backgroundColor: '#1e293b',
+    backgroundColor: THEME.surface,
     borderRadius: 16,
     padding: 20,
     marginBottom: 16,
+    borderWidth: 1,
+    borderColor: THEME.border,
   },
   fareLabel: {
     fontSize: 12,
@@ -744,10 +1024,12 @@ const styles = StyleSheet.create({
     color: '#f97316',
   },
   tripCard: {
-    backgroundColor: '#1e293b',
+    backgroundColor: THEME.surface,
     borderRadius: 12,
     padding: 16,
     marginBottom: 16,
+    borderWidth: 1,
+    borderColor: THEME.border,
   },
   sectionTitle: {
     fontSize: 12,
@@ -790,10 +1072,12 @@ const styles = StyleSheet.create({
     color: '#cbd5e1',
   },
   riderCard: {
-    backgroundColor: '#1e293b',
+    backgroundColor: THEME.surface,
     borderRadius: 12,
     padding: 16,
     marginBottom: 16,
+    borderWidth: 1,
+    borderColor: THEME.border,
   },
   riderRow: {
     flexDirection: 'row',
@@ -805,13 +1089,104 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#f8fafc',
   },
+  navigationCard: {
+    backgroundColor: THEME.surface,
+    borderRadius: 18,
+    padding: 16,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: THEME.border,
+    gap: 12,
+  },
+  navigationHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  navigationTitle: {
+    color: THEME.text,
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  navigationSubtitle: {
+    color: THEME.muted,
+    fontSize: 12,
+    marginTop: 2,
+  },
+  navigationStatsRow: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  navigationChip: {
+    flex: 1,
+    backgroundColor: THEME.mutedSurface,
+    borderRadius: 14,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderWidth: 1,
+    borderColor: THEME.border,
+  },
+  navigationChipLabel: {
+    color: THEME.muted,
+    fontSize: 11,
+    letterSpacing: 0.5,
+  },
+  navigationChipValue: {
+    color: THEME.text,
+    fontSize: 18,
+    fontWeight: '600',
+    marginTop: 4,
+  },
+  mapExpandButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#1e293b',
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderWidth: 1,
+    borderColor: THEME.border,
+  },
+  mapExpandText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '600',
+    letterSpacing: 0.4,
+  },
   mapContainer: {
     borderRadius: 12,
     overflow: 'hidden',
     marginBottom: 16,
+    borderWidth: 1,
+    borderColor: THEME.border,
   },
   map: {
     borderRadius: 12,
+  },
+  mapModalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.65)',
+    justifyContent: 'center',
+    padding: 16,
+  },
+  mapModalContent: {
+    backgroundColor: THEME.surface,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: THEME.border,
+    padding: 16,
+    gap: 12,
+  },
+  mapModalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  mapModalTitle: {
+    color: THEME.text,
+    fontSize: 16,
+    fontWeight: '700',
   },
   actionsContainer: {
     gap: 12,
@@ -855,4 +1230,3 @@ const styles = StyleSheet.create({
 });
 
 export default EnhancedJobTrackingScreen;
-

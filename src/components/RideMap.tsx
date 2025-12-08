@@ -1,6 +1,14 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { StyleSheet, Text, View, ViewStyle } from "react-native";
-import MapView, { Camera, Marker, Polyline, PROVIDER_DEFAULT, PROVIDER_GOOGLE, Region } from "react-native-maps";
+import MapView, {
+  AnimatedRegion,
+  Camera,
+  Marker,
+  Polyline,
+  PROVIDER_DEFAULT,
+  PROVIDER_GOOGLE,
+  Region,
+} from "react-native-maps";
 import MaterialCommunityIcons from "react-native-vector-icons/MaterialCommunityIcons";
 import { useAuth } from "../context/AuthContext";
 import { fetchCompanySettings, MapProvider } from "../services/companySettingsService";
@@ -23,6 +31,7 @@ interface RideMapProps {
   enable3D?: boolean; // ✨ NEW: Enable 3D camera tracking
   followDriver?: boolean; // ✨ NEW: Keep camera centered on driver
   updateInterval?: number; // ✅ NEW: Animation duration based on company location update interval (ms)
+  mapProviderOverride?: MapProvider; // ✅ NEW: Allow parent screens to force free-tier provider
 }
 
 const hasValidCoordinate = (point?: CoordinateInput): point is {
@@ -83,13 +92,23 @@ const RideMap: React.FC<RideMapProps> = ({
   enable3D = false, // ✨ NEW: Default to 2D for compatibility
   followDriver = false, // ✨ NEW: Default to overview mode
   updateInterval = 5000, // ✅ NEW: Default 5s if not provided (matches default location interval)
+  mapProviderOverride,
 }) => {
   const mapRef = useRef<MapView | null>(null);
+  const previousDriverCoordinateRef = useRef<{ latitude: number; longitude: number } | null>(null);
+  const driverAnimatedPositionRef = useRef<AnimatedRegion | null>(null);
   const { user } = useAuth();
-  const [mapProvider, setMapProvider] = useState<MapProvider>("NATIVE");
+  const [mapProvider, setMapProvider] = useState<MapProvider>(mapProviderOverride || "NATIVE");
 
   // Fetch company map provider settings
   useEffect(() => {
+    if (mapProviderOverride) {
+      setMapProvider(mapProviderOverride);
+      return;
+    }
+
+    let cancelled = false;
+
     const fetchMapProvider = async () => {
       if (!user?.companyId) return;
       
@@ -104,15 +123,23 @@ const RideMap: React.FC<RideMapProps> = ({
           return "NATIVE";
         };
         const provider = normalizeMapProvider(settings?.mapProvider);
-        setMapProvider(provider);
-        console.log(`🗺️ RideMap provider: ${provider}`);
+        if (!cancelled) {
+          setMapProvider(provider);
+          console.log(`🗺️ RideMap provider: ${provider}`);
+        }
       } catch (error) {
-        console.error("Failed to fetch map provider:", error);
+        if (!cancelled) {
+          console.error("Failed to fetch map provider:", error);
+        }
       }
     };
 
     fetchMapProvider();
-  }, [user?.companyId]);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.companyId, mapProviderOverride]);
 
   const points = useMemo(() => {
     const coords: Array<{ latitude: number; longitude: number }> = [];
@@ -140,6 +167,27 @@ const RideMap: React.FC<RideMapProps> = ({
 
   const region = useMemo(() => buildRegion(points), [points]);
 
+  // Determine fallback coordinate for initializing animations
+  const fallbackCoordinate = useMemo(() => {
+    if (hasValidCoordinate(driver)) {
+      return { latitude: driver.latitude!, longitude: driver.longitude! };
+    }
+    if (points.length > 0) {
+      const { latitude, longitude } = points[points.length - 1];
+      return { latitude, longitude };
+    }
+    return { latitude: region.latitude, longitude: region.longitude };
+  }, [driver, points, region.latitude, region.longitude]);
+
+  if (!driverAnimatedPositionRef.current) {
+    driverAnimatedPositionRef.current = new AnimatedRegion({
+      latitude: fallbackCoordinate.latitude,
+      longitude: fallbackCoordinate.longitude,
+      latitudeDelta: 0,
+      longitudeDelta: 0,
+    });
+  }
+
   // ✨ NEW: Calculate dynamic pitch based on speed
   const cameraPitch = useMemo(() => {
     if (!enable3D || !driver?.speed) return 0;
@@ -164,25 +212,50 @@ const RideMap: React.FC<RideMapProps> = ({
 
   // ✨ NEW: 3D camera following driver with heading
   useEffect(() => {
-    if (!enable3D || !followDriver || !mapRef.current || !hasValidCoordinate(driver)) {
+    if (!followDriver || !mapRef.current) {
       return;
     }
 
-    const camera: Camera = {
-      center: {
-        latitude: driver.latitude!,
-        longitude: driver.longitude!,
-      },
-      pitch: cameraPitch,
-      heading: driver.heading || 0, // Follow driver's heading
-      altitude: cameraAltitude,
-      zoom: 15,
+    if (!hasValidCoordinate(driver)) {
+      previousDriverCoordinateRef.current = null;
+      return;
+    }
+
+    const intervalMs = Math.max(updateInterval, 500);
+    const startCoordinate = previousDriverCoordinateRef.current;
+    const nextCoordinate = {
+      latitude: driver.latitude!,
+      longitude: driver.longitude!,
     };
 
-    // ✅ FIX: Animate camera smoothly with duration based on company's location update interval
-    // Use 80% of update interval to ensure animation completes before next update
-    const animationDuration = Math.max(800, Math.min(updateInterval * 0.8, 3000));
-    mapRef.current.animateCamera(camera, { duration: animationDuration });
+    if (startCoordinate) {
+      const latDelta = Math.abs(startCoordinate.latitude - nextCoordinate.latitude);
+      const lngDelta = Math.abs(startCoordinate.longitude - nextCoordinate.longitude);
+      if (latDelta < 0.000003 && lngDelta < 0.000003) {
+        return;
+      }
+    }
+
+    const isFirstAnimation = !startCoordinate;
+    previousDriverCoordinateRef.current = nextCoordinate;
+    const rawBuffer = intervalMs * 0.2;
+    const animationBufferMs = Math.max(
+      300,
+      Math.min(rawBuffer, Math.min(1500, intervalMs - 300))
+    );
+    const cameraAnimationDuration = isFirstAnimation
+      ? 800
+      : Math.max(intervalMs - animationBufferMs, 800);
+
+    const camera: Camera = {
+      center: nextCoordinate,
+      pitch: enable3D ? cameraPitch : 0,
+      heading: driver.heading || 0,
+      altitude: enable3D ? cameraAltitude : 1200,
+      zoom: enable3D ? 16 : 15,
+    };
+
+    mapRef.current.animateCamera(camera, { duration: cameraAnimationDuration });
   }, [
     enable3D,
     followDriver,
@@ -191,10 +264,33 @@ const RideMap: React.FC<RideMapProps> = ({
     driver?.heading,
     cameraPitch,
     cameraAltitude,
-    updateInterval, // ✅ NEW: Re-calculate animation when interval changes
+    updateInterval,
   ]);
 
   const showMap = points.length > 0;
+
+  useEffect(() => {
+    if (!driverAnimatedPositionRef.current) return;
+    if (!hasValidCoordinate(driver)) {
+      driverAnimatedPositionRef.current.stopAnimation();
+      return;
+    }
+
+    const intervalMs = Math.max(updateInterval, 500);
+    const rawBuffer = intervalMs * 0.2;
+    const animationBufferMs = Math.max(
+      300,
+      Math.min(rawBuffer, Math.min(1500, intervalMs - 300))
+    );
+    const markerDuration = Math.max(intervalMs - animationBufferMs, 300);
+
+    driverAnimatedPositionRef.current.timing({
+      latitude: driver.latitude!,
+      longitude: driver.longitude!,
+      duration: markerDuration,
+      useNativeDriver: false,
+    }).start();
+  }, [driver?.latitude, driver?.longitude, updateInterval]);
 
   // Convert MapProvider string to react-native-maps provider constant
   const mapProviderConstant =
@@ -238,26 +334,27 @@ const RideMap: React.FC<RideMapProps> = ({
               </View>
             </Marker>
           )}
-          {hasValidCoordinate(driver) && (
-            <Marker 
-              coordinate={{ latitude: driver.latitude!, longitude: driver.longitude! }} 
+          {driverAnimatedPositionRef.current && hasValidCoordinate(driver) && (
+            <Marker.Animated
+              coordinate={driverAnimatedPositionRef.current}
               title="Driver"
-              rotation={driver.heading || 0} // ✨ Rotate marker with heading
-              anchor={{ x: 0.5, y: 0.5 }} // ✨ Center the rotation
-              flat={true} // ✅ CRITICAL: Enable rotation on map (not just 3D tilt)
+              rotation={driver.heading || 0}
+              anchor={{ x: 0.5, y: 0.5 }}
+              flat
             >
-              <View style={[
-                styles.driverMarker,
-                enable3D && styles.driverMarker3D, // ✨ Enhanced styling for 3D
-              ]}>
-                {/* ✅ FIX: Always use directional icon (navigation) that rotates with heading */}
-                <MaterialCommunityIcons 
-                  name="navigation" 
-                  size={enable3D ? 24 : 20} 
-                  color="#fff" 
+              <View
+                style={[
+                  styles.driverMarker,
+                  enable3D && styles.driverMarker3D,
+                ]}
+              >
+                <MaterialCommunityIcons
+                  name="navigation"
+                  size={enable3D ? 24 : 20}
+                  color="#fff"
                 />
               </View>
-            </Marker>
+            </Marker.Animated>
           )}
           {Array.isArray(route) && route.length >= 2 && (
             <Polyline

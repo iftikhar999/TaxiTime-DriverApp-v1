@@ -12,6 +12,7 @@
  */
 
 import { globalJobTimer, LocationUpdate } from '../utils/enhancedJobTimer';
+import { getWaitingRatePerMinute } from '../utils/tariffUtils';
 import { coordinateHistory } from './coordinateHistory';
 
 // Configuration constants
@@ -20,12 +21,31 @@ const NORMAL_SPEED_INTERVAL = 2000; // 2 seconds at normal speed
 const LITTLE_HIGH_SPEED_INTERVAL = 800; // 800ms at moderate speed
 const MORE_SPEED_INTERVAL = 600; // 600ms at high speed
 const TOO_HIGH_SPEED_INTERVAL = 500; // 500ms at very high speed
+const DEFAULT_MIN_PROCESS_INTERVAL = 5000; // Minimum loop interval aligns with GPS defaults until company config overrides
 
 const GPS_NOISE_FILTER = 10; // meters
 const AUTO_RESUME_DISTANCE_THRESHOLD = 10; // meters - auto-resume if driver moves this much while paused
 
 // Terminal job statuses that should stop processing
-const TERMINAL_STATUSES = ['finished', 'cancelled', 'noShow', 'recalled', 'rejected'];
+const TERMINAL_STATUSES = new Set([
+  'finished',
+  'cancelled',
+  'canceled',
+  'noshow',
+  'no_show',
+  'recalled',
+  'rejected',
+  'completed',
+]);
+
+const ACTIVE_JOB_STATUSES = new Set([
+  'started',
+  'active',
+  'in_progress',
+  'inprogress',
+  'onride',
+  'running',
+]);
 
 export interface JobProcessorConfig {
   updateInterval?: number;
@@ -41,6 +61,7 @@ export interface ProcessingResult {
     waiting: number;
     elapsed: number;
     isMoving: boolean;
+    speedKmh: number;
   };
   pricing?: {
     totalCost: number;
@@ -51,12 +72,14 @@ export interface ProcessingResult {
 export class JobProcessor {
   private isProcessing: boolean = false;
   private config: JobProcessorConfig = {
-    updateInterval: STOPPED_UPDATE_INTERVAL,
+    updateInterval: DEFAULT_MIN_PROCESS_INTERVAL,
     enableAutoResume: true,
     enableCoordinateHistory: true,
   };
   private lastPausedLocation: LocationUpdate | null = null;
   private processingTimer: NodeJS.Timeout | null = null;
+  private lastProcessedLocationKey: string | null = null;
+  private duplicateLocationIterations: number = 0;
 
   /**
    * Configure the job processor
@@ -89,15 +112,18 @@ export class JobProcessor {
     }
   ): Promise<ProcessingResult> {
     const jobStatus = currentJob?.status;
+    const normalizedStatus = String(jobStatus || '').toLowerCase();
 
     // Handle no job or terminal status
-    if (!currentJob || TERMINAL_STATUSES.includes(jobStatus)) {
-      if (currentJob && TERMINAL_STATUSES.includes(jobStatus)) {
+    if (!currentJob || TERMINAL_STATUSES.has(normalizedStatus)) {
+      if (currentJob && TERMINAL_STATUSES.has(normalizedStatus)) {
         console.log('[JobProcessor] 🏁 Terminal status detected, clearing job:', jobStatus);
         callbacks.clearJob();
       }
       
       globalJobTimer.reset();
+      this.lastProcessedLocationKey = null;
+      this.duplicateLocationIterations = 0;
       this.lastPausedLocation = null;
       
       return {
@@ -107,7 +133,7 @@ export class JobProcessor {
     }
 
     // Handle PAUSED state with auto-resume
-    if (jobStatus === 'paused') {
+    if (normalizedStatus === 'paused') {
       return await this.handlePausedState(
         currentJob,
         currentLocation,
@@ -116,12 +142,12 @@ export class JobProcessor {
     }
 
     // Clear paused location if job is not paused
-    if (jobStatus !== 'paused') {
+    if (normalizedStatus !== 'paused') {
       this.lastPausedLocation = null;
     }
 
     // Handle STARTED state (active ride)
-    if (jobStatus === 'started') {
+    if (ACTIVE_JOB_STATUSES.has(normalizedStatus)) {
       return await this.handleStartedState(
         currentJob,
         currentLocation,
@@ -146,6 +172,10 @@ export class JobProcessor {
     currentLocation: LocationUpdate | null,
     callbacks: any
   ): Promise<ProcessingResult> {
+    if (!globalJobTimer.isTimerPaused()) {
+      globalJobTimer.pause();
+    }
+
     if (!this.lastPausedLocation && currentLocation) {
       this.lastPausedLocation = currentLocation;
     }
@@ -181,8 +211,9 @@ export class JobProcessor {
           );
         }
 
-        // Reset timer and continue processing as started
-        globalJobTimer.reset();
+        // Resume timer without losing accumulated metrics
+        globalJobTimer.resume(currentLocation);
+
         return await this.handleStartedState(
           { ...currentJob, status: 'started' },
           currentLocation,
@@ -216,6 +247,11 @@ export class JobProcessor {
     try {
       // Initialize timer from job data (if not already initialized)
       globalJobTimer.initializeFromJob(currentJob);
+
+      if (globalJobTimer.isTimerPaused()) {
+        globalJobTimer.resume(currentLocation);
+      }
+
       globalJobTimer.start();
 
       // Initialize coordinate tracking if enabled
@@ -234,6 +270,32 @@ export class JobProcessor {
           timestamp: currentLocation.timestamp
         } : 'NULL - NO LOCATION DATA!'
       );
+
+      const locationKey = currentLocation
+        ? `${currentLocation.latitude?.toFixed(6)}:${currentLocation.longitude?.toFixed(6)}:${currentLocation.timestamp ?? ''}`
+        : null;
+
+      if (currentLocation && locationKey === this.lastProcessedLocationKey) {
+        this.duplicateLocationIterations++;
+        if (this.duplicateLocationIterations === 1 || this.duplicateLocationIterations % 5 === 0) {
+          console.log('[JobProcessor] ⏸️ Duplicate location detected - waiting for fresh GPS update before recalculating timer');
+        }
+
+        const baseInterval = this.config.updateInterval ?? DEFAULT_MIN_PROCESS_INTERVAL;
+        return {
+          nextUpdateInterval: Math.max(
+            baseInterval,
+            this.getUpdateInterval(movementState, currentLocation.speed)
+          ),
+          isJobActive: true,
+          metrics: globalJobTimer.snapshot(),
+        };
+      }
+
+      if (locationKey) {
+        this.lastProcessedLocationKey = locationKey;
+        this.duplicateLocationIterations = 0;
+      }
 
       // Update timer with current location
       const metrics = globalJobTimer.update(currentLocation);
@@ -266,6 +328,7 @@ export class JobProcessor {
         totalAccumulatedWaitingSeconds: parseFloat(metrics.waiting.toFixed(2)),
         elapsedSeconds: parseFloat(metrics.elapsed.toFixed(2)), // ✅ ADD: elapsed time
         isDriverMoving: metrics.isMoving,
+        estimatedSpeedKmh: parseFloat((metrics.speedKmh || 0).toFixed(2)),
         movementType: movementState,
         earningsSoFar: pricing.totalCost.toFixed(2),
         pricingBreakdown: pricing.breakdown,
@@ -340,7 +403,7 @@ export class JobProcessor {
     const startingPrice = parseFloat(tariff.baseFare || tariff.startingPrice || 0);
     const distanceRate = parseFloat(tariff.distanceRate || tariff.perKmRate || 0);
     const timeRate = parseFloat(tariff.timeRate || tariff.perMinuteRate || 0);
-    const waitingRate = parseFloat(tariff.waitingRate || tariff.waitingPerMinuteRate || 0);
+    const waitingRate = getWaitingRatePerMinute(tariff);
 
     // Calculate costs (convert meters to km for distance rate)
     const distanceCost = (distanceMeters / 1000) * distanceRate;
@@ -356,6 +419,7 @@ export class JobProcessor {
         distanceCost: distanceCost.toFixed(2),
         durationCost: durationCost.toFixed(2),
         waitingCost: waitingCost.toFixed(2),
+        waitingRatePerMinute: waitingRate,
         totalDistance: parseFloat(distanceMeters.toFixed(2)),
         duration: parseFloat(elapsedSeconds.toFixed(2)),
         waitingSeconds: parseFloat(waitingSeconds.toFixed(2)),
@@ -419,7 +483,9 @@ export class JobProcessor {
       const result = await this.processJobState(job, location, movement, callbacks);
 
       if (this.isProcessing) {
-        this.processingTimer = setTimeout(processLoop, result.nextUpdateInterval);
+        const baseInterval = this.config.updateInterval ?? DEFAULT_MIN_PROCESS_INTERVAL;
+        const delay = Math.max(result.nextUpdateInterval, baseInterval);
+        this.processingTimer = setTimeout(processLoop, delay);
       }
     };
 
@@ -436,6 +502,9 @@ export class JobProcessor {
       clearTimeout(this.processingTimer);
       this.processingTimer = null;
     }
+
+    this.lastProcessedLocationKey = null;
+    this.duplicateLocationIterations = 0;
 
     console.log('[JobProcessor] ⏸️ Stopped continuous processing');
   }
@@ -465,4 +534,3 @@ export class JobProcessor {
 
 // Export singleton instance
 export const jobProcessor = new JobProcessor();
-

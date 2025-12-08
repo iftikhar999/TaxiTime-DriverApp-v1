@@ -1,6 +1,6 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { DriverProfile } from "../types/driver";
-import { RideSummary } from "../types/rides";
+import { RecentJobSummary } from "../types/recentJob";
 import {
     ActiveShift,
     ShiftCurrentResponse,
@@ -41,6 +41,19 @@ export const fetchCompanyTariffs = async (
 ): Promise<Tariff[]> => {
   const response = await httpClient.get<{ success: boolean; data: Tariff[] }>(
     `/companies/${companyId}/tariffs`
+  );
+  return response.data.data;
+};
+
+/**
+ * Fetch tariffs for a specific vehicle based on its zone assignments
+ * Only returns tariffs for zones that the vehicle is authorized to operate in
+ */
+export const fetchVehicleTariffs = async (
+  vehicleId: string
+): Promise<Tariff[]> => {
+  const response = await httpClient.get<{ success: boolean; data: Tariff[] }>(
+    `/mobile/driver/vehicles/${vehicleId}/tariffs`
   );
   return response.data.data;
 };
@@ -97,10 +110,16 @@ export const endDriverShift = async (
   const storedLocation = locationOverride ?? (await readLastKnownLocation());
   const location = storedLocation ?? DEFAULT_SHIFT_LOCATION;
 
-  const response = await httpClient.post<{
-    success: boolean;
-    data: ShiftStartResponse | null;
-  }>("/mobile/driver/shift/end", {
+  console.log("🛑 Ending shift with location:", {
+    source: locationOverride ? "override" : storedLocation ? "AsyncStorage" : "default",
+    latitude: location.latitude,
+    longitude: location.longitude,
+    hasAccuracy: location.accuracy !== undefined,
+    hasHeading: location.heading !== undefined,
+    hasSpeed: location.speed !== undefined,
+  });
+
+  const payload = {
     location: {
       latitude: location.latitude,
       longitude: location.longitude,
@@ -108,7 +127,16 @@ export const endDriverShift = async (
       heading: location.heading ?? 0,
       speed: location.speed ?? 0,
     },
-  });
+  };
+
+  console.log("📤 Sending end shift payload:", JSON.stringify(payload));
+
+  const response = await httpClient.post<{
+    success: boolean;
+    data: ShiftStartResponse | null;
+  }>("/mobile/driver/shift/end", payload);
+  
+  console.log("✅ Shift ended successfully:", response.data);
   return response.data.data || null;
 };
 
@@ -122,18 +150,29 @@ export const fetchCurrentShift = async (): Promise<ActiveShift | null> => {
     : null;
 };
 
-export const fetchRideHistory = async (limit = 3): Promise<RideSummary[]> => {
+export const fetchRecentJobs = async (
+  limit = 3
+): Promise<RecentJobSummary[]> => {
   const response = await httpClient.get<{
     success: boolean;
-    data: RideSummary[];
-  }>("/mobile/driver/jobs/history", {
-    params: {
-      limit,
-      status: "COMPLETED",
-      includeEarnings: "true",
-    },
+    data: RecentJobSummary[];
+  }>("/mobile/driver/jobs/recent", {
+    params: { limit },
   });
-  return response.data.data;
+
+  const summaries = response.data.data ?? [];
+  console.log(
+    "📥 Recent jobs response:",
+    JSON.stringify(
+      {
+        count: summaries.length,
+        items: summaries,
+      },
+      null,
+      2
+    )
+  );
+  return summaries;
 };
 
 export type DriverShiftStatus = "AVAILABLE" | "BUSY" | "AWAY";
@@ -147,7 +186,7 @@ export const updateDriverShiftStatus = async (status: DriverShiftStatus) => {
 
     // Emit status update via socket for real-time dispatch updates
     const { emitDriverStatus } = require("./driverSocket");
-    emitDriverStatus(status);
+    await emitDriverStatus(status);
 
     return response.data.data;
   } catch (error: any) {

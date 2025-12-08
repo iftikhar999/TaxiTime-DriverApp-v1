@@ -30,9 +30,18 @@ public class ForegroundService extends Service {
     private static final String TAG = "ForegroundService";
     private static final String CHANNEL_ID = "driver_shift_channel";
     private static final int NOTIFICATION_ID = 1001;
+    private static boolean shouldRestartService = true;
     
     private PowerManager.WakeLock wakeLock;
     private HeartbeatSender heartbeatSender;
+
+    public static void setShouldRestartService(boolean value) {
+        shouldRestartService = value;
+    }
+
+    public static boolean getShouldRestartService() {
+        return shouldRestartService;
+    }
     
     @Override
     public void onCreate() {
@@ -57,6 +66,7 @@ public class ForegroundService extends Service {
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         Log.d(TAG, "🔥 Foreground Service Started");
+        shouldRestartService = true;
         
         // Get shift details from intent
         String driverName = intent != null ? intent.getStringExtra("driverName") : "Driver";
@@ -126,10 +136,14 @@ public class ForegroundService extends Service {
         // Clear driver data
         HeartbeatSender.clearDriverData(this);
         
-        // Auto-restart service if shift is still active
-        Intent restartIntent = new Intent("com.taxitime.driverv1.RESTART_SERVICE");
-        sendBroadcast(restartIntent);
-        Log.d(TAG, "📡 Restart broadcast sent");
+        if (shouldRestartService) {
+            Intent restartIntent = new Intent("com.taxitime.driverv1.RESTART_SERVICE");
+            sendBroadcast(restartIntent);
+            Log.d(TAG, "📡 Restart broadcast sent");
+        } else {
+            Log.d(TAG, "🛑 Restart suppressed (manual stop)");
+            shouldRestartService = true;
+        }
     }
     
     @Override
@@ -145,11 +159,14 @@ public class ForegroundService extends Service {
             NotificationChannel channel = new NotificationChannel(
                 CHANNEL_ID,
                 "Driver Shift Service",
-                NotificationManager.IMPORTANCE_HIGH
+                NotificationManager.IMPORTANCE_MIN
             );
             channel.setDescription("Keeps the app running while you're on shift");
-            channel.setShowBadge(true);
-            channel.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
+            channel.setShowBadge(false);
+            channel.setLockscreenVisibility(Notification.VISIBILITY_PRIVATE);
+            channel.enableVibration(false);
+            channel.enableLights(false);
+            channel.setSound(null, null);
             
             NotificationManager manager = getSystemService(NotificationManager.class);
             if (manager != null) {
@@ -199,9 +216,11 @@ public class ForegroundService extends Service {
                 ))
             .setContentIntent(pendingIntent)
             .setOngoing(true) // Cannot be dismissed by swiping
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setPriority(NotificationCompat.PRIORITY_MIN)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setOnlyAlertOnce(true)
+            .setSilent(true)
             .addAction(R.mipmap.ic_launcher, "End Shift", endShiftPendingIntent);
         
         return builder.build();
@@ -219,4 +238,3 @@ public class ForegroundService extends Service {
         }
     }
 }
-

@@ -27,18 +27,18 @@ const styles = StyleSheet.create({
   },
   label: {
     fontSize: 14,
-    color: Colors.text.secondary,
+    color: '#a0aec0', // Bright secondary text for dark theme
     marginBottom: 6
   },
   input: {
-    backgroundColor: Colors.surface.card,
+    backgroundColor: '#0f1118', // Black background
     borderRadius: 12,
     paddingHorizontal: 16,
     paddingVertical: 14,
     fontSize: 16,
     borderWidth: 1,
-    borderColor: Colors.divider,
-    color: Colors.text.primary
+    borderColor: '#2d3240', // Dark border
+    color: '#ffffff' // White text
   },
   inputError: {
     borderColor: Colors.danger

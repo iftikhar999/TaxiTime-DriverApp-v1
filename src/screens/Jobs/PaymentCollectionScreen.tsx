@@ -1,13 +1,12 @@
 /**
- * ✨ PROFESSIONAL PAYMENT COLLECTION SCREEN
+ * 💳 PROFESSIONAL PAYMENT COLLECTION SCREEN
  * 
- * Modern, clean design with full functionality for all payment methods
- * - Cash: Simple confirmation
- * - Card: Stripe integration (Payment Sheet, Card Scan, NFC)
- * - EFTPOS: Customer provides terminal number
- * - Account: Customer provides account number
- * - Gift Card: Customer provides gift card code
- * - Total Mobility: 50% discount toggle
+ * Professional black theme matching ActiveRideScreen and JobPausedScreen
+ * - Real data display from multiple sources
+ * - All payment methods: Cash, Card, EFTPOS, Account, Gift Card
+ * - Total Mobility 50% discount support
+ * - Extra charges and discounts
+ * - Clean, taxi-meter aesthetic
  */
 
 import { useNavigation, useRoute } from '@react-navigation/native';
@@ -18,7 +17,6 @@ import {
     Alert,
     Dimensions,
     Modal,
-    ScrollView,
     StyleSheet,
     Text,
     TextInput,
@@ -29,6 +27,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import Toast from 'react-native-toast-message';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { useJob } from '../../context/JobContext';
+import { useLocation } from '../../context/LocationContext';
 import httpClient from '../../services/httpClient';
 
 const { width } = Dimensions.get('window');
@@ -83,6 +82,7 @@ export default function PaymentCollectionScreen() {
   const navigation = useNavigation();
   const route = useRoute<any>();
   const { currentJob, pricingBreakdown, pauseRecords, timer, completeJob } = useJob();
+  const { location } = useLocation();
   
   const { initPaymentSheet, presentPaymentSheet } = useStripe();
 
@@ -95,6 +95,12 @@ export default function PaymentCollectionScreen() {
   const [processing, setProcessing] = useState(false);
   const [finalFare, setFinalFare] = useState('0.00');
   
+  // ✅ FIX: Preserve initial route params amount so it doesn't get lost on re-renders
+  const [initialAmount] = useState(() => {
+    const amount = route.params?.amount;
+    return amount && amount > 0 ? parseFloat(amount.toString()) : 0;
+  });
+  
   // Method-specific state
   const [eftposNumber, setEftposNumber] = useState('');
   const [accountNumber, setAccountNumber] = useState('');
@@ -104,84 +110,79 @@ export default function PaymentCollectionScreen() {
   // Stripe state
   const [paymentSheetReady, setPaymentSheetReady] = useState(false);
 
-  // ✅ DEBUG: Log all available fare data on mount
-  useEffect(() => {
-    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    console.log('💳 PAYMENT SCREEN LOADED - CHECKING FARE SOURCES');
-    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    console.log('🔍 Available Fare Data:', {
-      '1_pricingBreakdown': pricingBreakdown?.totalCost || 'MISSING ❌',
-      '2_timerEarnings': timer?.earningsSoFar || 'MISSING ❌',
-      '3_currentJobFare': currentJob?.fare || 'MISSING ❌',
-      '4_currentJobEarnings': currentJob?.earningsSoFar || 'MISSING ❌',
-      '5_routeParamsAmount': route.params?.amount || 'MISSING ❌',
-    });
-    console.log('📦 Timer State:', {
-      distance: timer?.distanceMeters?.toFixed(2) || 'undefined',
-      waiting: timer?.waitingSeconds?.toFixed(0) || 'undefined',
-      elapsed: timer?.elapsedSeconds?.toFixed(0) || 'undefined',
-      earnings: timer?.earningsSoFar?.toFixed(2) || 'undefined',
-    });
-    console.log('📋 Job Data:', {
-      jobId: currentJob?.id || 'undefined',
-      status: currentJob?.status || 'undefined',
-    });
-    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  }, []); // Only on mount
+  const safeParse = (val: any) => {
+    if (val === null || val === undefined) return 0;
+    if (typeof val === 'number') return Number.isNaN(val) ? 0 : val;
+    const parsed = Number.parseFloat(val.toString());
+    return Number.isNaN(parsed) ? 0 : parsed;
+  };
 
   // Calculate total fare dynamically
   useEffect(() => {
-    // ✅ FIX: Check multiple sources in priority order (route.params FIRST!)
+    // ✅ FIX: Check multiple sources in priority order (initialAmount FIRST!)
     let baseFare = 0;
     let fareSource = 'none';
     
-    // Priority 1: Route params.amount (most reliable - passed directly from ActiveRideScreen)
-    if (route.params?.amount && route.params.amount > 0) {
-      baseFare = parseFloat(route.params.amount.toString());
-      fareSource = 'route.params.amount';
+    // Priority 1: Initial amount from route params (preserved on mount - most reliable)
+    if (initialAmount > 0) {
+      baseFare = initialAmount;
+      fareSource = 'initialAmount (from route.params)';
     }
     // Priority 2: Pricing breakdown (most accurate)
     else if (pricingBreakdown?.totalCost) {
-      baseFare = parseFloat(pricingBreakdown.totalCost);
-      fareSource = 'pricingBreakdown';
+      const val = safeParse(pricingBreakdown.totalCost);
+      if (val > 0) {
+        baseFare = val;
+        fareSource = 'pricingBreakdown';
+      }
     }
     // Priority 3: Timer earnings (real-time calculation)
     else if (timer?.earningsSoFar) {
-      baseFare = timer.earningsSoFar;
-      fareSource = 'timer.earningsSoFar';
+      const val = safeParse(timer.earningsSoFar);
+      if (val > 0) {
+        baseFare = val;
+        fareSource = 'timer.earningsSoFar';
+      }
     }
     // Priority 4: Current job fare
     else if (currentJob?.fare) {
-      baseFare = parseFloat(currentJob.fare.toString());
-      fareSource = 'currentJob.fare';
+      const val = safeParse(currentJob.fare);
+      if (val > 0) {
+        baseFare = val;
+        fareSource = 'currentJob.fare';
+      }
     }
     // Priority 5: Current job earningsSoFar
     else if (currentJob?.earningsSoFar) {
-      baseFare = parseFloat(currentJob.earningsSoFar.toString());
-      fareSource = 'currentJob.earningsSoFar';
+      const val = safeParse(currentJob.earningsSoFar);
+      if (val > 0) {
+        baseFare = val;
+        fareSource = 'currentJob.earningsSoFar';
+      }
     }
     
-    const extra = parseFloat(extraAmount || '0');
-    const discount = parseFloat(discountAmount || '0');
+    const extra = safeParse(extraAmount);
+    const discount = safeParse(discountAmount);
 
     // Apply Total Mobility 50% discount
     const fareAfterMobility = totalMobility ? baseFare * 0.5 : baseFare;
     
     const calculatedFare = Math.max(0, fareAfterMobility + extra - discount);
-    setFinalFare(calculatedFare.toFixed(2));
+    const newFinalFare = calculatedFare.toFixed(2);
     
-    console.log('💰 PAYMENT CALCULATION (step-by-step):', {
-      source: fareSource,
-      routeParamsAmount: route.params?.amount || 'missing',
-      routeParamsFareDetails: route.params?.fareDetails || 'missing',
-      '1_meterPrice': baseFare.toFixed(2),
-      '2_totalMobility': totalMobility ? 'YES (50% OFF on meter only)' : 'NO',
-      '3_meterAfterMobility': fareAfterMobility.toFixed(2),
-      '4_extraCharges': extra.toFixed(2),
-      '5_discounts': discount.toFixed(2),
-      '6_FINAL_TOTAL': calculatedFare.toFixed(2),
-    });
-  }, [pricingBreakdown, timer, currentJob, route.params, extraAmount, discountAmount, totalMobility]);
+    // ✅ FIX: Only update if fare actually changed (prevent render loop)
+    if (newFinalFare !== finalFare) {
+      console.log('💰 Fare Recalculated:', {
+        source: fareSource,
+        base: baseFare,
+        extra,
+        discount,
+        mobility: totalMobility,
+        final: newFinalFare
+      });
+      setFinalFare(newFinalFare);
+    }
+  }, [initialAmount, extraAmount, discountAmount, totalMobility, finalFare, pricingBreakdown?.totalCost, timer?.earningsSoFar, currentJob?.fare, currentJob?.earningsSoFar]);
 
   // Total pause time
   const totalPauseSeconds = pauseRecords?.reduce((sum, record) => sum + (record.durationSeconds || 0), 0) || 0;
@@ -189,24 +190,15 @@ export default function PaymentCollectionScreen() {
   // Initialize Stripe Payment Sheet
   const initializePaymentSheet = async () => {
     try {
-      console.log('🔄 Initializing Stripe Payment Sheet...');
-      const amountCents = Math.round(parseFloat(finalFare) * 100);
+      const amountCents = Math.round(safeParse(finalFare) * 100);
       
-      console.log('💳 Creating payment intent:', {
+      // ✅ FIX: httpClient baseURL already includes /api, so just use /payments/create-intent
+      const response = await httpClient.post('/payments/create-intent', {
         amount: amountCents,
         currency: 'nzd',
         jobId: currentJob?.id,
         customerId: currentJob?.customer?.id,
       });
-      
-      const response = await httpClient.post('/api/payments/create-intent', {
-        amount: amountCents,
-        currency: 'nzd',
-        jobId: currentJob?.id,
-        customerId: currentJob?.customer?.id,
-      });
-
-      console.log('✅ Payment intent response:', response.data);
 
       const { paymentIntent, ephemeralKey, customer } = response.data;
 
@@ -222,19 +214,13 @@ export default function PaymentCollectionScreen() {
       });
 
       if (error) {
-        console.error('❌ Error initializing payment sheet:', error);
+        console.error('Error initializing payment sheet:', error);
         Alert.alert('Setup Failed', error.message);
       } else {
-        console.log('✅ Payment sheet initialized successfully');
         setPaymentSheetReady(true);
       }
     } catch (error: any) {
-      console.error('❌ Error creating payment intent:', {
-        message: error.message,
-        status: error.response?.status,
-        data: error.response?.data,
-        stack: error.stack,
-      });
+      console.error('Error creating payment intent:', error);
       
       // ✅ Show detailed error to user
       Alert.alert(
@@ -250,7 +236,7 @@ export default function PaymentCollectionScreen() {
 
   // Initialize Stripe when Card is selected
   useEffect(() => {
-    if (selectedMethod === 'CARD' && parseFloat(finalFare) > 0) {
+    if (selectedMethod === 'CARD' && safeParse(finalFare) > 0) {
       initializePaymentSheet();
     }
   }, [selectedMethod, finalFare]);
@@ -277,7 +263,6 @@ export default function PaymentCollectionScreen() {
         throw new Error(error.message);
       }
 
-      console.log('✅ Card payment successful');
       return true;
     } catch (error: any) {
       console.error('Card payment error:', error);
@@ -307,6 +292,38 @@ export default function PaymentCollectionScreen() {
   };
 
   // Confirm Payment
+  const toNumeric = (value: number | string | undefined | null, fallback = 0) => {
+    if (value === null || value === undefined || value === '') {
+      return fallback;
+    }
+    const parsed = typeof value === 'number' ? value : parseFloat(value);
+    return Number.isFinite(parsed) ? parsed : fallback;
+  };
+
+  const buildBreakdownPayload = () => {
+    const distanceMeters = toNumeric(timer?.distanceMeters, pricingBreakdown?.totalDistance || 0);
+    const elapsedSeconds = toNumeric(timer?.elapsedSeconds, pricingBreakdown?.duration || 0);
+    const waitingSeconds = toNumeric(timer?.waitingSeconds, pricingBreakdown?.waitingSeconds || 0);
+
+    const normalizedPricing = pricingBreakdown
+      ? {
+          startingPrice: toNumeric(pricingBreakdown.startingPrice),
+          distanceCost: toNumeric(pricingBreakdown.distanceCost),
+          durationCost: toNumeric(pricingBreakdown.durationCost),
+          waitingCost: toNumeric(pricingBreakdown.waitingCost),
+          totalCost: toNumeric(pricingBreakdown.totalCost),
+        }
+      : null;
+
+    return {
+      totalDistanceMeters: distanceMeters,
+      totalDistanceKm: Number((distanceMeters / 1000).toFixed(3)),
+      totalDurationSeconds: elapsedSeconds,
+      waitingSeconds,
+      pricing: normalizedPricing,
+    };
+  };
+
   const handlePaymentConfirm = async () => {
     if (!selectedMethod) {
       Alert.alert('Select Payment Method', 'Please select how the customer will pay');
@@ -320,6 +337,16 @@ export default function PaymentCollectionScreen() {
     setProcessing(true);
 
     try {
+      if (!currentJob?.id) {
+        Alert.alert('Missing Job', 'No active job found for payment.');
+        setProcessing(false);
+        return;
+      }
+
+      const numericFare = toNumeric(finalFare);
+      const numericExtra = toNumeric(extraAmount);
+      const numericDiscount = toNumeric(discountAmount);
+
       // Handle Stripe card payment
       if (selectedMethod === 'CARD') {
         const paymentSuccess = await handleCardPayment();
@@ -329,18 +356,39 @@ export default function PaymentCollectionScreen() {
         }
       }
 
+      const breakdownPayload = buildBreakdownPayload();
+
       // Build payment data
       const paymentData: any = {
-        jobId: currentJob?.id,
-        method: selectedMethod,
-        amount: finalFare,
-        baseFare: pricingBreakdown?.totalCost || '0.00',
-        extraAmount: extraAmount || '0.00',
-        discountAmount: discountAmount || '0.00',
+        jobId: currentJob.id,
+        customerId: currentJob.customer?.id,
+        paymentMethod: selectedMethod,
+        amount: numericFare,
+        baseFare: toNumeric(pricingBreakdown?.startingPrice),
+        extraAmount: numericExtra,
+        discountAmount: numericDiscount,
         totalMobility,
         adjustmentReason,
         recordedAt: new Date().toISOString(),
+        collectedAt: new Date().toISOString(),
+        breakdown: breakdownPayload,
+        pauseRecords: Array.isArray(pauseRecords) && pauseRecords.length > 0 ? pauseRecords : undefined,
       };
+
+      if (location?.latitude && location?.longitude) {
+        paymentData.dropoffLocation = {
+          latitude: location.latitude,
+          longitude: location.longitude,
+          accuracy: location.accuracy ?? null,
+          heading: location.heading ?? null,
+          speed: location.speed ?? null,
+          address:
+            currentJob.dropoffAddress ||
+            (currentJob as any)?.destination?.address ||
+            null,
+          timestamp: new Date().toISOString(),
+        };
+      }
 
       // Add method-specific data
       if (selectedMethod === 'EFTPOS') {
@@ -351,10 +399,10 @@ export default function PaymentCollectionScreen() {
         paymentData.giftCardCode = giftCardCode;
       }
 
-      console.log('💳 Payment collected:', paymentData);
+      await httpClient.post('/mobile/driver/jobs/payment', paymentData);
 
       // Complete the job
-      await completeJob(selectedMethod, parseFloat(finalFare));
+      await completeJob(selectedMethod, numericFare);
       
       Toast.show({
         type: 'success',
@@ -366,9 +414,38 @@ export default function PaymentCollectionScreen() {
       setTimeout(() => {
         navigation.navigate('Home' as never);
       }, 1500);
-    } catch (error) {
+    } catch (error: any) {
       console.error('Payment error:', error);
-      Alert.alert('Payment Failed', 'Please try again or choose a different payment method');
+      
+      // Handle specific error cases
+      let errorTitle = 'Payment Failed';
+      let errorMessage = 'Please try again or choose a different payment method';
+      
+      if (error?.response?.status === 403) {
+        errorTitle = 'Job Assignment Error';
+        errorMessage = error?.response?.data?.message || 
+                      'This job is not assigned to you. Please check if you have the correct job selected.';
+      } else if (error?.response?.status === 404) {
+        errorTitle = 'Job Not Found';
+        errorMessage = 'The job could not be found. It may have been cancelled.';
+      } else if (error?.response?.status === 400) {
+        errorTitle = 'Invalid Payment Data';
+        errorMessage = error?.response?.data?.message || 
+                      'Missing required payment information. Please check all fields.';
+      } else if (error?.message) {
+        errorMessage = error.message;
+      }
+      
+      Alert.alert(errorTitle, errorMessage, [
+        {
+          text: 'OK',
+          style: 'cancel',
+        },
+        ...(error?.response?.status === 403 ? [{
+          text: 'Go Back',
+          onPress: () => navigation.goBack(),
+        }] : []),
+      ]);
     } finally {
       setProcessing(false);
     }
@@ -376,403 +453,202 @@ export default function PaymentCollectionScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
-      <ScrollView 
-        style={styles.scrollView}
-        contentContainerStyle={styles.content}
-        showsVerticalScrollIndicator={false}
-      >
-        {/* Header */}
-        <View style={styles.header}>
-          <View style={styles.headerIcon}>
-            <Icon name="wallet-outline" size={28} color="#fff" />
-          </View>
-          <Text style={styles.headerTitle}>Collect Payment</Text>
-          <Text style={styles.headerSubtitle}>Job #{currentJob?.publicJobId || currentJob?.id?.slice(-6)}</Text>
+      {/* Compact Header */}
+      <View style={styles.header}>
+        <View style={styles.headerContent}>
+          <Text style={styles.headerTitle}>PAYMENT</Text>
+          <Text style={styles.headerJobId}>#{currentJob?.publicJobId || currentJob?.id?.slice(-6)}</Text>
         </View>
+        <Icon name="wallet-outline" size={20} color="#fbbf24" />
+      </View>
 
-        {/* Total Amount Card */}
-        <View style={styles.totalCard}>
-          <Text style={styles.totalLabel}>TOTAL TO COLLECT</Text>
+      {/* Main Content - Non-scrolling layout */}
+      <View style={styles.mainContent}>
+        {/* Large Total Amount */}
+        <View style={styles.totalSection}>
+          <Text style={styles.totalLabel}>COLLECT</Text>
           <Text style={styles.totalAmount}>${finalFare}</Text>
-          {totalMobility && (
-            <View style={styles.mobilityBadge}>
-              <Icon name="wheelchair-accessibility" size={14} color="#fff" />
-              <Text style={styles.mobilityBadgeText}>Total Mobility Applied (-50%)</Text>
-            </View>
-          )}
         </View>
 
-        {/* Fare Breakdown */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Fare Breakdown</Text>
-          <View style={styles.card}>
-            {pricingBreakdown ? (
-              <>
-                <View style={styles.breakdownRow}>
-                  <Text style={styles.breakdownLabel}>Base Fare</Text>
-                  <Text style={styles.breakdownValue}>${pricingBreakdown.startingPrice}</Text>
-                </View>
-                <View style={styles.breakdownRow}>
-                  <Text style={styles.breakdownLabel}>
-                    Distance · {(parseFloat(pricingBreakdown.totalDistance) / 1000).toFixed(2)} km
-                  </Text>
-                  <Text style={styles.breakdownValue}>${pricingBreakdown.distanceCost}</Text>
-                </View>
-                <View style={styles.breakdownRow}>
-                  <Text style={styles.breakdownLabel}>
-                    Time · {Math.floor(parseFloat(pricingBreakdown.duration) / 60)}min
-                  </Text>
-                  <Text style={styles.breakdownValue}>${pricingBreakdown.durationCost}</Text>
-                </View>
-                {parseFloat(pricingBreakdown.waitingCost) > 0 && (
-                  <View style={styles.breakdownRow}>
-                    <Text style={styles.breakdownLabel}>
-                      Waiting · {Math.floor(parseFloat(pricingBreakdown.waitingSeconds) / 60)}min
-                    </Text>
-                    <Text style={styles.breakdownValue}>${pricingBreakdown.waitingCost}</Text>
-                  </View>
-                )}
-                <View style={styles.divider} />
-                <View style={styles.breakdownRow}>
-                  <Text style={styles.subtotalLabel}>Meter Price</Text>
-                  <Text style={styles.subtotalValue}>${pricingBreakdown.totalCost}</Text>
-                </View>
-                
-                {/* ✅ Show Total Mobility discount if applied */}
-                {totalMobility && (
-                  <View style={[styles.breakdownRow, { backgroundColor: '#f3e8ff' }]}>
-                    <Text style={[styles.breakdownLabel, { color: '#8b5cf6' }]}>
-                      Total Mobility (50% OFF)
-                    </Text>
-                    <Text style={[styles.breakdownValue, { color: '#8b5cf6' }]}>
-                      -${(parseFloat(pricingBreakdown.totalCost) * 0.5).toFixed(2)}
-                    </Text>
-                  </View>
-                )}
-                
-                {/* ✅ Show extras and discounts */}
-                {parseFloat(extraAmount || '0') > 0 && (
-                  <View style={styles.breakdownRow}>
-                    <Text style={styles.breakdownLabel}>Extra Charges</Text>
-                    <Text style={styles.breakdownValue}>+${parseFloat(extraAmount).toFixed(2)}</Text>
-                  </View>
-                )}
-                {parseFloat(discountAmount || '0') > 0 && (
-                  <View style={styles.breakdownRow}>
-                    <Text style={styles.breakdownLabel}>Discount</Text>
-                    <Text style={[styles.breakdownValue, { color: '#10b981' }]}>
-                      -${parseFloat(discountAmount).toFixed(2)}
-                    </Text>
-                  </View>
-                )}
-              </>
-            ) : timer ? (
-              <>
-                {/* ✅ Fallback: Show timer-based breakdown */}
-                <View style={styles.breakdownRow}>
-                  <Text style={styles.breakdownLabel}>
-                    Distance · {((timer.distanceMeters || 0) / 1000).toFixed(2)} km
-                  </Text>
-                  <Text style={styles.breakdownValue}>-</Text>
-                </View>
-                <View style={styles.breakdownRow}>
-                  <Text style={styles.breakdownLabel}>
-                    Time · {Math.floor((timer.elapsedSeconds || 0) / 60)}min
-                  </Text>
-                  <Text style={styles.breakdownValue}>-</Text>
-                </View>
-                {(timer.waitingSeconds || 0) > 0 && (
-                  <View style={styles.breakdownRow}>
-                    <Text style={styles.breakdownLabel}>
-                      Waiting · {Math.floor((timer.waitingSeconds || 0) / 60)}min
-                    </Text>
-                    <Text style={styles.breakdownValue}>-</Text>
-                  </View>
-                )}
-                <View style={styles.divider} />
-                <View style={styles.breakdownRow}>
-                  <Text style={styles.subtotalLabel}>Meter Price</Text>
-                  <Text style={styles.subtotalValue}>${(timer.earningsSoFar || 0).toFixed(2)}</Text>
-                </View>
-                
-                {/* ✅ Show Total Mobility discount if applied */}
-                {totalMobility && (
-                  <View style={[styles.breakdownRow, { backgroundColor: '#f3e8ff' }]}>
-                    <Text style={[styles.breakdownLabel, { color: '#8b5cf6' }]}>
-                      Total Mobility (50% OFF)
-                    </Text>
-                    <Text style={[styles.breakdownValue, { color: '#8b5cf6' }]}>
-                      -${((timer.earningsSoFar || 0) * 0.5).toFixed(2)}
-                    </Text>
-                  </View>
-                )}
-                
-                {/* ✅ Show extras and discounts */}
-                {parseFloat(extraAmount || '0') > 0 && (
-                  <View style={styles.breakdownRow}>
-                    <Text style={styles.breakdownLabel}>Extra Charges</Text>
-                    <Text style={styles.breakdownValue}>+${parseFloat(extraAmount).toFixed(2)}</Text>
-                  </View>
-                )}
-                {parseFloat(discountAmount || '0') > 0 && (
-                  <View style={styles.breakdownRow}>
-                    <Text style={styles.breakdownLabel}>Discount</Text>
-                    <Text style={[styles.breakdownValue, { color: '#10b981' }]}>
-                      -${parseFloat(discountAmount).toFixed(2)}
-                    </Text>
-                  </View>
-                )}
-              </>
-            ) : route.params?.fareDetails ? (
-              <>
-                {/* ✅ Fallback: Show fareDetails from navigation params */}
-                <View style={styles.breakdownRow}>
-                  <Text style={styles.breakdownLabel}>Base Fare</Text>
-                  <Text style={styles.breakdownValue}>${route.params.fareDetails.base.toFixed(2)}</Text>
-                </View>
-                <View style={styles.breakdownRow}>
-                  <Text style={styles.breakdownLabel}>
-                    Distance · {route.params.fareDetails.distanceKm.toFixed(2)} km
-                  </Text>
-                  <Text style={styles.breakdownValue}>${route.params.fareDetails.distance.toFixed(2)}</Text>
-                </View>
-                <View style={styles.breakdownRow}>
-                  <Text style={styles.breakdownLabel}>
-                    Time · {route.params.fareDetails.durationMin}min
-                  </Text>
-                  <Text style={styles.breakdownValue}>${route.params.fareDetails.time.toFixed(2)}</Text>
-                </View>
-                {route.params.fareDetails.waiting > 0 && (
-                  <View style={styles.breakdownRow}>
-                    <Text style={styles.breakdownLabel}>
-                      Waiting · {route.params.fareDetails.waitingMin}min
-                    </Text>
-                    <Text style={styles.breakdownValue}>${route.params.fareDetails.waiting.toFixed(2)}</Text>
-                  </View>
-                )}
-                <View style={styles.divider} />
-                <View style={styles.breakdownRow}>
-                  <Text style={styles.subtotalLabel}>Meter Price</Text>
-                  <Text style={styles.subtotalValue}>${route.params.amount?.toFixed(2) || finalFare}</Text>
-                </View>
-                
-                {/* ✅ Show Total Mobility discount if applied */}
-                {totalMobility && (
-                  <View style={[styles.breakdownRow, { backgroundColor: '#f3e8ff' }]}>
-                    <Text style={[styles.breakdownLabel, { color: '#8b5cf6' }]}>
-                      Total Mobility (50% OFF)
-                    </Text>
-                    <Text style={[styles.breakdownValue, { color: '#8b5cf6' }]}>
-                      -${((route.params.amount || 0) * 0.5).toFixed(2)}
-                    </Text>
-                  </View>
-                )}
-                
-                {/* ✅ Show extras and discounts */}
-                {parseFloat(extraAmount || '0') > 0 && (
-                  <View style={styles.breakdownRow}>
-                    <Text style={styles.breakdownLabel}>Extra Charges</Text>
-                    <Text style={styles.breakdownValue}>+${parseFloat(extraAmount).toFixed(2)}</Text>
-                  </View>
-                )}
-                {parseFloat(discountAmount || '0') > 0 && (
-                  <View style={styles.breakdownRow}>
-                    <Text style={styles.breakdownLabel}>Discount</Text>
-                    <Text style={[styles.breakdownValue, { color: '#10b981' }]}>
-                      -${parseFloat(discountAmount).toFixed(2)}
-                    </Text>
-                  </View>
-                )}
-                
-                <View style={styles.divider} />
-                <View style={styles.breakdownRow}>
-                  <Text style={styles.subtotalLabel}>Total Fare</Text>
-                  <Text style={styles.subtotalValue}>${parseFloat(finalFare).toFixed(2)}</Text>
-                </View>
-              </>
-            ) : (
-              <>
-                {/* ✅ Final Fallback: Show simplified view */}
-                <View style={styles.breakdownRow}>
-                  <Text style={styles.breakdownLabel}>Meter Price</Text>
-                  <Text style={styles.breakdownValue}>${parseFloat(finalFare).toFixed(2)}</Text>
-                </View>
-                
-                {/* ✅ Show Total Mobility discount if applied */}
-                {totalMobility && (
-                  <View style={[styles.breakdownRow, { backgroundColor: '#f3e8ff' }]}>
-                    <Text style={[styles.breakdownLabel, { color: '#8b5cf6' }]}>
-                      Total Mobility (50% OFF)
-                    </Text>
-                    <Text style={[styles.breakdownValue, { color: '#8b5cf6' }]}>
-                      -${(parseFloat(finalFare) * 0.5).toFixed(2)}
-                    </Text>
-                  </View>
-                )}
-                
-                {/* ✅ Show extras and discounts */}
-                {parseFloat(extraAmount || '0') > 0 && (
-                  <View style={styles.breakdownRow}>
-                    <Text style={styles.breakdownLabel}>Extra Charges</Text>
-                    <Text style={styles.breakdownValue}>+${parseFloat(extraAmount).toFixed(2)}</Text>
-                  </View>
-                )}
-                {parseFloat(discountAmount || '0') > 0 && (
-                  <View style={styles.breakdownRow}>
-                    <Text style={styles.breakdownLabel}>Discount</Text>
-                    <Text style={[styles.breakdownValue, { color: '#10b981' }]}>
-                      -${parseFloat(discountAmount).toFixed(2)}
-                    </Text>
-                  </View>
-                )}
-                
-                <View style={styles.divider} />
-                <View style={styles.breakdownRow}>
-                  <Text style={styles.subtotalLabel}>Total Fare</Text>
-                  <Text style={styles.subtotalValue}>${parseFloat(finalFare).toFixed(2)}</Text>
-                </View>
-              </>
-            )}
+        {/* Compact Fare Summary - Single Row */}
+        <View style={styles.fareSummaryRow}>
+          <View style={styles.fareSummaryItem}>
+            <Text style={styles.fareSummaryValue}>
+              {(() => {
+                const meters = pricingBreakdown?.totalDistance ?? timer?.distanceMeters ?? 0;
+                const km = safeParse(meters) / 1000;
+                return km.toFixed(2);
+              })()}
+            </Text>
+            <Text style={styles.fareSummaryLabel}>KM</Text>
+          </View>
+          <View style={styles.fareSummaryDivider} />
+          <View style={styles.fareSummaryItem}>
+            <Text style={styles.fareSummaryValue}>
+              {(() => {
+                const totalSeconds = pricingBreakdown?.duration ?? timer?.elapsedSeconds ?? 0;
+                const seconds = safeParse(totalSeconds);
+                const mins = Math.floor(seconds / 60);
+                const secs = Math.floor(seconds % 60);
+                return `${mins}:${secs.toString().padStart(2, '0')}`;
+              })()}
+            </Text>
+            <Text style={styles.fareSummaryLabel}>MIN</Text>
+          </View>
+          <View style={styles.fareSummaryDivider} />
+          <View style={styles.fareSummaryItem}>
+            <Text style={styles.fareSummaryValue}>
+              ${pricingBreakdown?.totalCost || safeParse(timer?.earningsSoFar || initialAmount).toFixed(2)}
+            </Text>
+            <Text style={styles.fareSummaryLabel}>METER</Text>
           </View>
         </View>
 
-        {/* Adjustments */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Adjustments</Text>
-          <View style={styles.card}>
-            {/* Total Mobility */}
+        {/* Fare Breakdown Section */}
+        <View style={styles.fareBreakdownContainer}>
+          <View style={styles.fareBreakdownRow}>
+            <View style={styles.fareBreakdownItem}>
+              <Text style={styles.fareBreakdownLabel}>Distance Cost</Text>
+              <Text style={styles.fareBreakdownValue}>
+                ${safeParse(pricingBreakdown?.distanceCost).toFixed(2)}
+              </Text>
+            </View>
+            <View style={styles.fareBreakdownItem}>
+              <Text style={styles.fareBreakdownLabel}>Time Cost</Text>
+              <Text style={styles.fareBreakdownValue}>
+                ${safeParse(pricingBreakdown?.durationCost).toFixed(2)}
+              </Text>
+            </View>
+          </View>
+          <View style={styles.fareBreakdownRow}>
+            <View style={styles.fareBreakdownItem}>
+              <Text style={styles.fareBreakdownLabel}>Wait Cost</Text>
+              <Text style={styles.fareBreakdownValue}>
+                ${safeParse(pricingBreakdown?.waitingCost).toFixed(2)}
+              </Text>
+            </View>
+            <View style={styles.fareBreakdownItem}>
+              <Text style={styles.fareBreakdownLabel}>Base Fare</Text>
+              <Text style={styles.fareBreakdownValue}>
+                ${safeParse(pricingBreakdown?.startingPrice).toFixed(2)}
+              </Text>
+            </View>
+          </View>
+          {/* Wait Time Display */}
+          <View style={styles.fareBreakdownWaitRow}>
+            <Text style={styles.fareBreakdownWaitLabel}>Wait Time:</Text>
+            <Text style={styles.fareBreakdownWaitValue}>
+              {(() => {
+                const waitSecs = safeParse(pricingBreakdown?.waitingSeconds ?? timer?.waitingSeconds ?? 0);
+                const mins = Math.floor(waitSecs / 60);
+                const secs = Math.floor(waitSecs % 60);
+                return `${mins}:${secs.toString().padStart(2, '0')}`;
+              })()}
+            </Text>
+          </View>
+        </View>
+
+        {/* Compact Adjustments Row */}
+        <View style={styles.adjustmentsRow}>
+          {/* Total Mobility Toggle */}
+          <TouchableOpacity
+            style={[styles.adjustmentChip, totalMobility && styles.adjustmentChipActive]}
+            onPress={() => setTotalMobility(!totalMobility)}
+            activeOpacity={0.7}
+          >
+            <Icon name="wheelchair-accessibility" size={14} color={totalMobility ? '#fbbf24' : '#666'} />
+            <Text style={[styles.adjustmentChipText, totalMobility && styles.adjustmentChipTextActive]}>
+              -50%
+            </Text>
+          </TouchableOpacity>
+
+          {/* Extra Amount */}
+          <View style={styles.compactInputWrapper}>
+            <Icon name="plus" size={12} color="#666" />
+            <Text style={styles.compactCurrency}>$</Text>
+            <TextInput
+              style={styles.compactInput}
+              value={extraAmount}
+              onChangeText={setExtraAmount}
+              keyboardType="decimal-pad"
+              placeholder="0"
+              placeholderTextColor="#555"
+            />
+          </View>
+
+          {/* Discount Amount */}
+          <View style={styles.compactInputWrapper}>
+            <Icon name="minus" size={12} color="#666" />
+            <Text style={styles.compactCurrency}>$</Text>
+            <TextInput
+              style={styles.compactInput}
+              value={discountAmount}
+              onChangeText={setDiscountAmount}
+              keyboardType="decimal-pad"
+              placeholder="0"
+              placeholderTextColor="#555"
+            />
+          </View>
+        </View>
+
+        {/* Compact Payment Methods - All in one row */}
+        <View style={styles.methodsRow}>
+          {PAYMENT_METHODS.map((method) => (
             <TouchableOpacity
-              style={styles.toggleRow}
-              onPress={() => setTotalMobility(!totalMobility)}
+              key={method.id}
+              style={[
+                styles.methodChip,
+                selectedMethod === method.id && styles.methodChipSelected,
+                { borderColor: selectedMethod === method.id ? method.color : '#333' }
+              ]}
+              onPress={() => handleMethodSelect(method.id)}
               activeOpacity={0.7}
             >
-              <View style={styles.toggleLeft}>
-                <View style={[styles.toggleIcon, { backgroundColor: '#8b5cf6' }]}>
-                  <Icon name="wheelchair-accessibility" size={20} color="#fff" />
-                </View>
-                <View style={styles.toggleText}>
-                  <Text style={styles.toggleLabel}>Total Mobility Discount</Text>
-                  <Text style={styles.toggleHint}>50% off METER PRICE only (not extras/discounts)</Text>
-                </View>
-              </View>
-              <View style={[styles.switch, totalMobility && styles.switchActive]}>
-                <View style={[styles.switchThumb, totalMobility && styles.switchThumbActive]} />
-              </View>
+              <Icon 
+                name={method.icon} 
+                size={18} 
+                color={selectedMethod === method.id ? method.color : '#888'} 
+              />
+              <Text style={[
+                styles.methodChipLabel,
+                selectedMethod === method.id && { color: method.color }
+              ]}>
+                {method.label}
+              </Text>
             </TouchableOpacity>
-
-            {/* Extra Amount */}
-            <View style={styles.inputGroup}>
-              <Text style={styles.inputLabel}>Extra Charges</Text>
-              <View style={styles.inputWrapper}>
-                <Icon name="plus-circle-outline" size={20} color="#6b7280" />
-                <Text style={styles.currencySymbol}>$</Text>
-                <TextInput
-                  style={styles.input}
-                  value={extraAmount}
-                  onChangeText={setExtraAmount}
-                  keyboardType="decimal-pad"
-                  placeholder="0.00"
-                  placeholderTextColor="#9ca3af"
-                />
-              </View>
-              <Text style={styles.inputHint}>Airport fees, tolls, waiting charges</Text>
-            </View>
-
-            {/* Discount Amount */}
-            <View style={styles.inputGroup}>
-              <Text style={styles.inputLabel}>Discount</Text>
-              <View style={styles.inputWrapper}>
-                <Icon name="minus-circle-outline" size={20} color="#6b7280" />
-                <Text style={styles.currencySymbol}>$</Text>
-                <TextInput
-                  style={styles.input}
-                  value={discountAmount}
-                  onChangeText={setDiscountAmount}
-                  keyboardType="decimal-pad"
-                  placeholder="0.00"
-                  placeholderTextColor="#9ca3af"
-                />
-              </View>
-              <Text style={styles.inputHint}>Promotional codes, loyalty rewards</Text>
-            </View>
-
-            {/* Adjustment Reason */}
-            {(parseFloat(extraAmount || '0') > 0 || parseFloat(discountAmount || '0') > 0) && (
-              <View style={styles.inputGroup}>
-                <Text style={styles.inputLabel}>Reason for Adjustment</Text>
-                <TextInput
-                  style={styles.textArea}
-                  value={adjustmentReason}
-                  onChangeText={setAdjustmentReason}
-                  placeholder="Describe the reason for this adjustment..."
-                  placeholderTextColor="#9ca3af"
-                  multiline
-                  numberOfLines={3}
-                />
-              </View>
-            )}
-          </View>
+          ))}
         </View>
 
-        {/* Payment Methods */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Payment Method</Text>
-          <View style={styles.methodsGrid}>
-            {PAYMENT_METHODS.map((method) => (
-              <TouchableOpacity
-                key={method.id}
-                style={[
-                  styles.methodCard,
-                  selectedMethod === method.id && styles.methodCardSelected,
-                ]}
-                onPress={() => handleMethodSelect(method.id)}
-                activeOpacity={0.7}
-              >
-                <View style={[styles.methodIcon, { backgroundColor: method.color }]}>
-                  <Icon name={method.icon} size={32} color="#fff" />
-                </View>
-                <Text style={styles.methodLabel}>{method.label}</Text>
-                <Text style={styles.methodDescription}>{method.description}</Text>
-                {selectedMethod === method.id && (
-                  <View style={styles.methodCheck}>
-                    <Icon name="check-circle" size={24} color={method.color} />
-                  </View>
-                )}
-              </TouchableOpacity>
-            ))}
-          </View>
-        </View>
-
-        {/* Actions */}
-        <View style={styles.actions}>
+        {/* Action Buttons - Always visible */}
+        <View style={styles.actionsContainer}>
           <TouchableOpacity
-            style={styles.secondaryButton}
+            style={styles.backButton}
             onPress={() => navigation.goBack()}
             disabled={processing}
           >
-            <Icon name="arrow-left" size={20} color="#1f2937" />
-            <Text style={styles.secondaryButtonText}>Back to Ride</Text>
+            <Icon name="arrow-left" size={18} color="#fff" />
+            <Text style={styles.backButtonText}>Back</Text>
           </TouchableOpacity>
 
           <TouchableOpacity
             style={[
-              styles.primaryButton,
-              (!selectedMethod || processing) && styles.primaryButtonDisabled,
+              styles.confirmButton,
+              (!selectedMethod || processing) && styles.confirmButtonDisabled,
             ]}
             onPress={handlePaymentConfirm}
             disabled={!selectedMethod || processing}
           >
             {processing ? (
-              <ActivityIndicator color="#fff" />
+              <ActivityIndicator color="#000" size="small" />
             ) : (
               <>
-                <Icon name="check-circle" size={20} color="#fff" />
-                <Text style={styles.primaryButtonText}>Confirm Payment</Text>
+                <Icon name="check-bold" size={18} color="#000" />
+                <Text style={styles.confirmButtonText}>Complete Payment</Text>
               </>
             )}
           </TouchableOpacity>
         </View>
-      </ScrollView>
+      </View>
 
       {/* Method Details Modal */}
       <Modal
@@ -843,407 +719,356 @@ export default function PaymentCollectionScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f9fafb',
+    backgroundColor: '#000000',
+    paddingTop: 40,
   },
   scrollView: {
     flex: 1,
   },
   content: {
-    padding: 20,
     paddingBottom: 40,
   },
-  // Header
+  // Professional Header
   header: {
-    alignItems: 'center',
-    marginBottom: 24,
-  },
-  headerIcon: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    backgroundColor: '#3b82f6',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 12,
-    shadowColor: '#3b82f6',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 8,
-  },
-  headerTitle: {
-    fontSize: 28,
-    fontWeight: '700',
-    color: '#111827',
-    marginBottom: 4,
-  },
-  headerSubtitle: {
-    fontSize: 14,
-    color: '#6b7280',
-  },
-  // Total Card
-  totalCard: {
-    backgroundColor: '#1f2937',
-    borderRadius: 20,
-    padding: 32,
-    alignItems: 'center',
-    marginBottom: 24,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.15,
-    shadowRadius: 16,
-    elevation: 12,
-  },
-  totalLabel: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#9ca3af',
-    letterSpacing: 1.5,
-    marginBottom: 8,
-  },
-  totalAmount: {
-    fontSize: 56,
-    fontWeight: '800',
-    color: '#fff',
-  },
-  mobilityBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    marginTop: 12,
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    backgroundColor: 'rgba(139, 92, 246, 0.2)',
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: 'rgba(139, 92, 246, 0.3)',
-  },
-  mobilityBadgeText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#c4b5fd',
-  },
-  // Section
-  section: {
-    marginBottom: 24,
-  },
-  sectionTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#111827',
-    marginBottom: 12,
-  },
-  card: {
-    backgroundColor: '#fff',
-    borderRadius: 16,
-    padding: 20,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.05,
-    shadowRadius: 8,
-    elevation: 2,
-  },
-  // Breakdown
-  breakdownRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingVertical: 10,
-  },
-  breakdownLabel: {
-    fontSize: 14,
-    color: '#6b7280',
-  },
-  breakdownValue: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#111827',
-  },
-  divider: {
-    height: 1,
-    backgroundColor: '#e5e7eb',
-    marginVertical: 12,
-  },
-  subtotalLabel: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#111827',
-  },
-  subtotalValue: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: '#3b82f6',
-  },
-  // Toggle
-  toggleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: '#f3f4f6',
-  },
-  toggleLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flex: 1,
-    gap: 12,
-  },
-  toggleIcon: {
-    width: 44,
-    height: 44,
-    borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  toggleText: {
-    flex: 1,
-  },
-  toggleLabel: {
-    fontSize: 15,
-    fontWeight: '600',
-    color: '#111827',
-    marginBottom: 2,
-  },
-  toggleHint: {
-    fontSize: 12,
-    color: '#6b7280',
-  },
-  switch: {
-    width: 52,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: '#e5e7eb',
-    padding: 2,
-    justifyContent: 'center',
-  },
-  switchActive: {
-    backgroundColor: '#8b5cf6',
-  },
-  switchThumb: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    backgroundColor: '#fff',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.2,
-    shadowRadius: 2,
-    elevation: 3,
-  },
-  switchThumbActive: {
-    transform: [{ translateX: 20 }],
-  },
-  // Input
-  inputGroup: {
-    marginTop: 16,
-  },
-  inputLabel: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#374151',
-    marginBottom: 8,
-  },
-  inputWrapper: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
+    backgroundColor: '#000000',
     paddingHorizontal: 16,
     paddingVertical: 12,
-    backgroundColor: '#f9fafb',
-    borderRadius: 12,
-    borderWidth: 2,
-    borderColor: '#e5e7eb',
+    borderBottomWidth: 1,
+    borderBottomColor: '#333',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
   },
-  currencySymbol: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: '#111827',
-  },
-  input: {
+  headerContent: {
     flex: 1,
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#111827',
-    padding: 0,
   },
-  inputHint: {
-    fontSize: 12,
-    color: '#9ca3af',
-    marginTop: 6,
-  },
-  textArea: {
-    padding: 16,
-    backgroundColor: '#f9fafb',
-    borderRadius: 12,
-    borderWidth: 2,
-    borderColor: '#e5e7eb',
-    fontSize: 14,
-    color: '#111827',
-    minHeight: 80,
-    textAlignVertical: 'top',
-  },
-  // Payment Methods
-  methodsGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 12,
-  },
-  methodCard: {
-    width: (width - 64) / 2,
-    backgroundColor: '#fff',
-    borderRadius: 16,
-    padding: 20,
-    alignItems: 'center',
-    borderWidth: 2,
-    borderColor: '#e5e7eb',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.05,
-    shadowRadius: 8,
-    elevation: 2,
-  },
-  methodCardSelected: {
-    borderColor: '#3b82f6',
-    backgroundColor: '#eff6ff',
-  },
-  methodIcon: {
-    width: 64,
-    height: 64,
-    borderRadius: 16,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 12,
-  },
-  methodLabel: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#111827',
-    marginBottom: 4,
-  },
-  methodDescription: {
-    fontSize: 11,
-    color: '#6b7280',
-    textAlign: 'center',
-    lineHeight: 14,
-  },
-  methodCheck: {
-    position: 'absolute',
-    top: 12,
-    right: 12,
-  },
-  // Actions
-  actions: {
-    flexDirection: 'row',
-    gap: 12,
-    marginTop: 8,
-  },
-  secondaryButton: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    paddingVertical: 16,
-    borderRadius: 14,
-    backgroundColor: '#fff',
-    borderWidth: 2,
-    borderColor: '#e5e7eb',
-  },
-  secondaryButtonText: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#1f2937',
-  },
-  primaryButton: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    paddingVertical: 16,
-    borderRadius: 14,
-    backgroundColor: '#3b82f6',
-    shadowColor: '#3b82f6',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 6,
-  },
-  primaryButtonDisabled: {
-    opacity: 0.5,
-  },
-  primaryButtonText: {
+  headerTitle: {
     fontSize: 16,
     fontWeight: '700',
     color: '#fff',
+    letterSpacing: 1,
   },
-  // Modal
+  headerJobId: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#666',
+    marginTop: 2,
+    fontFamily: 'Courier New',
+  },
+  walletIconContainer: {
+    width: 40,
+    height: 40,
+    borderRadius: 4,
+    backgroundColor: '#1a1a1a',
+    borderWidth: 1,
+    borderColor: '#333',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  // Main Content Area
+  mainContent: {
+    flex: 1,
+    padding: 12,
+    justifyContent: 'space-between',
+  },
+  // Compact Total Section
+  totalSection: {
+    alignItems: 'center',
+    paddingVertical: 16,
+  },
+  totalLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#666',
+    letterSpacing: 2,
+    marginBottom: 4,
+  },
+  totalAmount: {
+    fontSize: 52,
+    fontWeight: '700',
+    color: '#fbbf24',
+    fontFamily: 'Courier New',
+  },
+  // Fare Summary Row (KM / MIN / METER)
+  fareSummaryRow: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#1a1a1a',
+    borderRadius: 6,
+    paddingVertical: 10,
+    paddingHorizontal: 20,
+    marginTop: 8,
+  },
+  fareSummaryItem: {
+    alignItems: 'center',
+    paddingHorizontal: 16,
+  },
+  fareSummaryValue: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#fff',
+    fontFamily: 'Courier New',
+  },
+  fareSummaryLabel: {
+    fontSize: 9,
+    fontWeight: '600',
+    color: '#666',
+    letterSpacing: 1,
+    marginTop: 2,
+  },
+  fareSummaryDivider: {
+    width: 1,
+    height: 24,
+    backgroundColor: '#333',
+  },
+  // Fare Breakdown Section
+  fareBreakdownContainer: {
+    backgroundColor: '#1a1a1a',
+    borderRadius: 6,
+    padding: 10,
+    marginTop: 8,
+  },
+  fareBreakdownRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 6,
+  },
+  fareBreakdownItem: {
+    flex: 1,
+    alignItems: 'center',
+  },
+  fareBreakdownLabel: {
+    fontSize: 9,
+    fontWeight: '600',
+    color: '#666',
+    letterSpacing: 0.5,
+    marginBottom: 2,
+  },
+  fareBreakdownValue: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#fff',
+    fontFamily: 'Courier New',
+  },
+  fareBreakdownWaitRow: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 4,
+    paddingTop: 6,
+    borderTopWidth: 1,
+    borderTopColor: '#333',
+  },
+  fareBreakdownWaitLabel: {
+    fontSize: 9,
+    fontWeight: '600',
+    color: '#666',
+    letterSpacing: 0.5,
+  },
+  fareBreakdownWaitValue: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#fbbf24',
+    fontFamily: 'Courier New',
+  },
+  // Compact Adjustments Row
+  adjustmentsRow: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 10,
+    marginTop: 12,
+  },
+  adjustmentChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    backgroundColor: '#1a1a1a',
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: '#333',
+  },
+  adjustmentChipActive: {
+    borderColor: '#fbbf24',
+    backgroundColor: 'rgba(251, 191, 36, 0.1)',
+  },
+  adjustmentChipText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#666',
+  },
+  adjustmentChipTextActive: {
+    color: '#fbbf24',
+  },
+  compactInputWrapper: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    backgroundColor: '#1a1a1a',
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: '#333',
+  },
+  compactCurrency: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#fbbf24',
+    fontFamily: 'Courier New',
+  },
+  compactInput: {
+    width: 40,
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#fff',
+    fontFamily: 'Courier New',
+    padding: 0,
+    textAlign: 'center',
+  },
+  // Compact Payment Methods Row
+  methodsRow: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 16,
+  },
+  methodChip: {
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    backgroundColor: '#1a1a1a',
+    borderRadius: 6,
+    borderWidth: 2,
+    borderColor: '#333',
+    minWidth: 58,
+  },
+  methodChipSelected: {
+    backgroundColor: 'rgba(251, 191, 36, 0.08)',
+  },
+  methodChipLabel: {
+    fontSize: 9,
+    fontWeight: '600',
+    color: '#888',
+    marginTop: 4,
+    letterSpacing: 0.3,
+  },
+  // Actions Container
+  actionsContainer: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 'auto',
+    paddingTop: 16,
+    paddingBottom: 20,
+  },
+  backButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 14,
+    paddingHorizontal: 20,
+    backgroundColor: '#1a1a1a',
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#333',
+  },
+  backButtonText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#fff',
+  },
+  confirmButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 14,
+    backgroundColor: '#fbbf24',
+    borderRadius: 6,
+  },
+  confirmButtonDisabled: {
+    opacity: 0.4,
+  },
+  confirmButtonText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#000',
+  },
+  // Modal (Black Theme)
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    backgroundColor: 'rgba(0, 0, 0, 0.85)',
     justifyContent: 'flex-end',
   },
   modalContent: {
-    backgroundColor: '#fff',
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    padding: 24,
-    paddingBottom: 40,
+    backgroundColor: '#1a1a1a',
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    padding: 20,
+    paddingBottom: 32,
+    borderTopWidth: 1,
+    borderTopColor: '#333',
   },
   modalHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 16,
+    marginBottom: 12,
   },
   modalTitle: {
-    fontSize: 20,
-    fontWeight: '700',
-    color: '#111827',
-  },
-  modalClose: {
-    width: 40,
-    height: 40,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: 20,
-    backgroundColor: '#f3f4f6',
-  },
-  modalDescription: {
-    fontSize: 14,
-    color: '#6b7280',
-    lineHeight: 20,
-    marginBottom: 20,
-  },
-  modalInputGroup: {
-    marginBottom: 20,
-  },
-  modalInput: {
-    padding: 16,
-    backgroundColor: '#f9fafb',
-    borderRadius: 12,
-    borderWidth: 2,
-    borderColor: '#e5e7eb',
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#111827',
-  },
-  modalButton: {
-    paddingVertical: 16,
-    borderRadius: 14,
-    backgroundColor: '#3b82f6',
-    alignItems: 'center',
-    justifyContent: 'center',
-    shadowColor: '#3b82f6',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 6,
-  },
-  modalButtonText: {
     fontSize: 16,
     fontWeight: '700',
     color: '#fff',
+    letterSpacing: 0.5,
+  },
+  modalClose: {
+    width: 36,
+    height: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 4,
+    backgroundColor: '#000',
+    borderWidth: 1,
+    borderColor: '#333',
+  },
+  modalDescription: {
+    fontSize: 12,
+    color: '#888',
+    lineHeight: 17,
+    marginBottom: 16,
+  },
+  modalInputGroup: {
+    marginBottom: 16,
+  },
+  modalInput: {
+    padding: 12,
+    backgroundColor: '#000',
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: '#333',
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#fff',
+    fontFamily: 'Courier New',
+  },
+  modalButton: {
+    paddingVertical: 14,
+    borderRadius: 4,
+    backgroundColor: '#fbbf24',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  modalButtonText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#000',
+    letterSpacing: 0.5,
   },
 });

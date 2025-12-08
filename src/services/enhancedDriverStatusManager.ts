@@ -1,18 +1,19 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { io, Socket } from "socket.io-client";
+import { SOCKET_BASE_URL } from "../config/environment";
 import {
-  ActiveJobDetails,
-  DriverLocation,
-  EnhancedDriverState,
-  EnhancedDriverStatus,
-  JOB_STATUS_TO_DRIVER_STATUS,
-  JobProgressPayload,
-  JobProgressStatus,
-  LocationUpdatePayload,
-  MeterTelemetryPayload,
-  SOCKET_EVENTS,
-  STATUS_TRANSITIONS,
-  StatusUpdatePayload,
+    ActiveJobDetails,
+    DriverLocation,
+    EnhancedDriverState,
+    EnhancedDriverStatus,
+    JOB_STATUS_TO_DRIVER_STATUS,
+    JobProgressPayload,
+    JobProgressStatus,
+    LocationUpdatePayload,
+    MeterTelemetryPayload,
+    SOCKET_EVENTS,
+    STATUS_TRANSITIONS,
+    StatusUpdatePayload,
 } from "../types/enhancedDriverStatus";
 
 /**
@@ -44,7 +45,7 @@ class EnhancedDriverStatusManager {
       await this.restoreDriverState();
 
       // Initialize socket connection with enhanced resilience
-      this.socket = io("http://localhost:3000/driver", {
+      this.socket = io(`${SOCKET_BASE_URL}/driver`, {
         auth: {
           token,
           userId: driverId,

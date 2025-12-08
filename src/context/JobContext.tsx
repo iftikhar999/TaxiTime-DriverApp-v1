@@ -1,22 +1,26 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import React, {
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
+    createContext,
+    useCallback,
+    useContext,
+    useEffect,
+    useMemo,
+    useRef,
+    useState,
 } from "react";
+import { Alert, Platform } from "react-native";
+import type { MediaStream } from "react-native-webrtc";
 import {
-  emitDriverStatus,
-  emitJobProgress,
-  emitMeterTelemetry,
-  ensureDriverSocket,
-  getSocket,
-  registerDriverStateRestoration, // ✅ NEW: For receiving complete driver state via socket
-  unregisterDriverStateRestoration, // ✅ FIX: For cleanup
+    emitDriverStatus,
+    emitJobProgress,
+    emitMeterSnapshot,
+    emitMeterTelemetry,
+    ensureDriverSocket,
+    getSocket,
+    registerDriverStateRestoration, // ✅ NEW: For receiving complete driver state via socket
+    unregisterDriverStateRestoration, // ✅ FIX: For cleanup
 } from "../services/driverSocket";
+import { ForegroundService } from "../services/foregroundService";
 import { RideSummary } from "../types/rides";
 import { Tariff } from "../types/tariff";
 import { calculateDistance } from "../utils/distance";
@@ -26,10 +30,19 @@ import { useLocation } from "./LocationContext";
 import { useShift } from "./ShiftContext"; // ✅ NEW: For updating selectedTariff during tariff change
 
 // ✨ NEW: Import job processing services
+import jobMeterService from "../native/jobMeterService"; // ✅ NEW: Background meter service
 import { coordinateHistory } from "../services/coordinateHistory";
 import { jobProcessor } from "../services/jobProcessor";
+import {
+    getDriverVideoStreamingState,
+    startDriverVideoStream,
+    stopDriverVideoStream,
+    subscribeToDriverVideoState,
+} from "../services/videoStreamingService";
 import { PauseRecord, PricingBreakdown } from "../types/jobTypes";
-import { globalJobTimer } from "../utils/enhancedJobTimer";
+import { DriverVideoStreamingState } from "../types/video";
+import { globalJobTimer, TimerState } from "../utils/enhancedJobTimer";
+import { getWaitingRatePerMinute } from "../utils/tariffUtils";
 
 export type JobStatus =
   | "IDLE"
@@ -54,6 +67,7 @@ export interface JobTimerState {
   waitingSeconds: number;
   distanceMeters: number;
   earningsSoFar?: number; // ✅ ADD: earnings calculated by timer
+  speedKmh?: number;
 }
 
 export interface RoutePoint {
@@ -65,18 +79,121 @@ export interface RoutePoint {
 const JOB_STATE_STORAGE_KEY = "driverApp:jobState";
 const MAX_ROUTE_POINTS = 1500;
 const MIN_ROUTE_INCREMENT_METERS = 1.5;
+const AUTO_RESUME_DISTANCE_METERS = 12;
+const AUTO_RESUME_SPEED_KMH = 5;
+const SNAPSHOT_INTERVAL_MS = 60000;
 const TRACKABLE_STATUSES = new Set<JobStatus>([
   "ASSIGNED",
   "ACCEPTED",
   "ON_THE_WAY",
   "ARRIVED",
   "STARTED",
-  "PAUSED", // ✨ NEW: Track paused jobs
+  "PAUSED",
   "ACTIVE",
   "REACHED",
   "NO_SHOW",
   "RECALLED",
 ]);
+
+const VIDEO_STREAMING_JOB_STATUSES = new Set<JobStatus>([
+  "STARTED",
+  "ACTIVE",
+]);
+
+const toSafeNumber = (value: any, fallback = 0): number => {
+  if (value === null || value === undefined) {
+    return fallback;
+  }
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
+
+const normalizeTariffSnapshot = (source: any): Tariff | null => {
+  if (!source || typeof source !== "object") {
+    return null;
+  }
+
+  const waitingCandidates = [
+    source.waitingTimeRate,
+    source.waiting_rate,
+    source.waitingRate,
+    source.waiting_fee,
+    source.waitingFee,
+    source.waiting_fee_per_minute,
+    source.waitingFeePerMinute,
+    source.waitingCost,
+    source.waiting_cost,
+    source.waitingCharge,
+    source.waiting_charge,
+  ];
+
+  const waitingValue = waitingCandidates.find((candidate) =>
+    Number.isFinite(Number(candidate))
+  );
+
+  const normalized: Tariff = {
+    id: String(
+      source.id ??
+        source.tariffId ??
+        source.tariff_id ??
+        source._id ??
+        source.uuid ??
+        source.code ??
+        source.name ??
+        `tariff_${Date.now()}`
+    ),
+    name: source.name ?? source.label ?? source.title ?? "Tariff",
+    baseFare: toSafeNumber(
+      source.baseFare ?? source.base_fare ?? source.startingPrice ?? source.base,
+      0
+    ),
+    perKmRate: toSafeNumber(
+      source.perKmRate ??
+        source.per_km_rate ??
+        source.distanceRate ??
+        source.ratePerKm ??
+        source.kmRate,
+      0
+    ),
+    perMinuteRate: toSafeNumber(
+      source.perMinuteRate ??
+        source.per_minute_rate ??
+        source.timeRate ??
+        source.ratePerMinute ??
+        source.minuteRate,
+      0
+    ),
+    minimumFare: toSafeNumber(
+      source.minimumFare ??
+        source.minimum_fare ??
+        source.minimum ??
+        source.minimumFareAmount,
+      0
+    ),
+  };
+
+  if (waitingValue !== undefined) {
+    const parsedWaiting = Number(waitingValue);
+    if (Number.isFinite(parsedWaiting)) {
+      normalized.waitingTimeRate = parsedWaiting;
+    }
+  }
+
+  return normalized;
+};
+
+const getTariffIdentity = (tariff?: Tariff | null): string | null => {
+  if (!tariff) {
+    return null;
+  }
+  return (
+    (tariff.id && String(tariff.id)) ||
+    (tariff as any)?.tariffId ||
+    (tariff as any)?.code ||
+    tariff.name ||
+    null
+  );
+};
 
 type PersistedJobState = {
   status: JobStatus;
@@ -84,9 +201,14 @@ type PersistedJobState = {
   timer: JobTimerState;
   routePoints: RoutePoint[];
   timestamp: number;
+  selectedTariffId?: string; // ✅ ADD: Persist selected tariff
+  pricingBreakdown?: PricingBreakdown; // ✅ ADD: Persist pricing breakdown
+  pauseRecords?: PauseRecord[]; // ✅ ADD: Persist pause records
+  timerState?: TimerState; // ✅ NEW: Persist timer engine state for crash recovery
 };
 
 export interface ActiveJob extends Omit<RideSummary, "status" | "passenger"> {
+  customer: any;
   countdownMs?: number;
   expiresAt?: string | null;
   assignmentId?: string | null;
@@ -160,9 +282,13 @@ interface JobContextValue {
   pauseRecords: PauseRecord[];
   pauseJob: () => Promise<void>;
   resumeJob: () => Promise<void>;
+  resumePendingPayment: () => void;
   prepareJobForPayment: () => Promise<ActiveJob | null>; // ✅ NEW: Prepare for payment
   completeJob: (paymentMethod: string, amountPaid: number) => Promise<void>; // ✅ UPDATED: Complete after payment
   changeTariff: (newTariff: any) => Promise<void>; // ✅ NEW: Change tariff mid-ride
+  videoStreamingState: DriverVideoStreamingState;
+  startVideoStreaming: () => Promise<MediaStream | null>;
+  stopVideoStreaming: (reason?: string) => Promise<void>;
 }
 
 const JobContext = createContext<JobContextValue | undefined>(undefined);
@@ -176,30 +302,184 @@ export const JobProvider: React.FC<{ children: React.ReactNode }> = ({
     elapsedSeconds: 0,
     waitingSeconds: 0,
     distanceMeters: 0,
+    speedKmh: 0,
   });
   const [pendingAction, setPendingAction] =
     useState<PendingJobAction | null>(null);
   const [routePoints, setRoutePoints] = useState<RoutePoint[]>([]);
   const routePointsRef = useRef<RoutePoint[]>([]);
+  const lastSnapshotIndexRef = useRef(0);
   const [hydrated, setHydrated] = useState(false);
   const persistTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const currentJobRef = useRef<ActiveJob | null>(null);
   const statusRef = useRef<JobStatus>(status);
+  const statusTransitionRef = useRef<JobStatus>(status);
   const pendingActionRef = useRef<PendingJobAction | null>(null);
   const { location } = useLocation();
   const locationRef = useRef(location); // ✅ Store latest location in ref for jobProcessor
+  const timerRef = useRef<JobTimerState>(timer);
+  const pricingBreakdownRef = useRef<PricingBreakdown | null>(null);
+  const pausedLocationRef = useRef<{ latitude: number; longitude: number; timestamp?: number } | null>(null);
+  const autoResumeInFlightRef = useRef(false);
+  const pendingPaymentSnapshotRef = useRef<{
+    timerState: TimerState;
+    pricing: PricingBreakdown | null;
+  } | null>(null);
   const { driver } = useAuth();
   const shiftContext = useShift(); // ✅ NEW: For updating selectedTariff during tariff change
+  const refreshShiftRecentJobs = shiftContext.refreshRecentJobs;
+  const resolvedCompanyId = driver?.companyId ?? driver?.company?.id ?? null;
   
   // ✅ Keep locationRef updated with latest location
   useEffect(() => {
     locationRef.current = location;
   }, [location]);
   
+  useEffect(() => {
+    timerRef.current = timer;
+  }, [timer]);
+
+  useEffect(() => {
+    pricingBreakdownRef.current = pricingBreakdown;
+  }, [pricingBreakdown]);
+
   // ✨ NEW: Enhanced job processing state
   const [pricingBreakdown, setPricingBreakdown] = useState<PricingBreakdown | null>(null);
   const [pauseRecords, setPauseRecords] = useState<PauseRecord[]>([]);
   const [isProcessingJob, setIsProcessingJob] = useState(false);
+  const [videoStreamingState, setVideoStreamingState] =
+    useState<DriverVideoStreamingState>(getDriverVideoStreamingState());
+
+  // Subscribe to video state changes - MUST be after useState declaration
+  useEffect(() => {
+    return subscribeToDriverVideoState(setVideoStreamingState);
+  }, []);
+  
+  const syncTimerFromEngine = useCallback(() => {
+    const engineState = globalJobTimer.getState();
+    if (!engineState) {
+      return engineState;
+    }
+
+    let derivedElapsed = timer.elapsedSeconds;
+    if (engineState.startTime && engineState.lastUpdateTime) {
+      derivedElapsed = Math.max(
+        0,
+        (engineState.lastUpdateTime - engineState.startTime) / 1000
+      );
+    }
+
+    setTimer((previous) => ({
+      ...previous,
+      elapsedSeconds: Number.isFinite(derivedElapsed)
+        ? derivedElapsed
+        : previous.elapsedSeconds,
+      waitingSeconds:
+        engineState.totalWaitingSeconds ?? previous.waitingSeconds,
+      distanceMeters:
+        engineState.totalDistanceMeters ?? previous.distanceMeters,
+    }));
+
+    return engineState;
+  }, [timer.elapsedSeconds, timer.waitingSeconds, timer.distanceMeters]);
+
+  const startVideoStreamingManually = useCallback(async (): Promise<MediaStream | null> => {
+    if (!currentJob?.id || !driver?.id || !resolvedCompanyId) {
+      throw new Error("Active job and company context are required to stream video.");
+    }
+
+    return startDriverVideoStream({
+      jobId: currentJob.id,
+      driverId: driver.id,
+      companyId: resolvedCompanyId,
+    });
+  }, [currentJob?.id, driver?.id, resolvedCompanyId]);
+
+  const stopVideoStreamingManually = useCallback(
+    async (reason?: string) => {
+      await stopDriverVideoStream(reason);
+    },
+    []
+  );
+
+  const captureRouteSegment = useCallback((): RoutePoint[] => {
+    const points = routePointsRef.current;
+    if (!points.length) {
+      lastSnapshotIndexRef.current = 0;
+      return [];
+    }
+
+    const startIndex = Math.min(lastSnapshotIndexRef.current, points.length);
+    if (startIndex >= points.length) {
+      return [];
+    }
+
+    const freshPoints = points.slice(startIndex);
+    lastSnapshotIndexRef.current = points.length;
+
+    if (freshPoints.length <= 40) {
+      return freshPoints;
+    }
+
+    const step = Math.max(1, Math.ceil(freshPoints.length / 40));
+    return freshPoints.filter((_, index) => index % step === 0);
+  }, []);
+
+  const emitPersistentSnapshot = useCallback(
+    (reason: "interval" | "final") => {
+      const job = currentJobRef.current;
+      const timerSnapshot = timerRef.current;
+
+      if (!job?.id || !timerSnapshot) {
+        return;
+      }
+
+      const pricingSnapshot = pricingBreakdownRef.current;
+      const fallbackFare = Number(
+        timerSnapshot.earningsSoFar ??
+          job.earningsSoFar ??
+          job.fare ??
+          0
+      );
+      const currentFare = pricingSnapshot?.totalCost
+        ? Number(pricingSnapshot.totalCost)
+        : fallbackFare;
+
+      const routeSegment = captureRouteSegment();
+      const locationPayload = locationRef.current
+        ? {
+            latitude: Number(locationRef.current.latitude),
+            longitude: Number(locationRef.current.longitude),
+            accuracy: locationRef.current.accuracy ?? null,
+            heading: locationRef.current.heading ?? null,
+            speed: locationRef.current.speed ?? null,
+            timestamp: locationRef.current.timestamp ?? Date.now(),
+          }
+        : undefined;
+
+      emitMeterSnapshot(
+        job.id,
+        {
+          elapsedSeconds: Math.round(timerSnapshot.elapsedSeconds ?? 0),
+          distanceMeters: Number(
+            (timerSnapshot.distanceMeters ?? 0).toFixed(2)
+          ),
+          waitingSeconds: Math.round(timerSnapshot.waitingSeconds ?? 0),
+          currentFare,
+          speedKmh: Number(timerSnapshot.speedKmh ?? 0),
+        },
+        locationPayload,
+        {
+          status: statusRef.current,
+          isPaused: statusRef.current === "PAUSED",
+          recordedAt: Date.now(),
+          reason,
+          routeSegment,
+        }
+      );
+    },
+    [captureRouteSegment]
+  );
 
   const clearPersistedJobState = useCallback(async () => {
     try {
@@ -207,7 +487,8 @@ export const JobProvider: React.FC<{ children: React.ReactNode }> = ({
     } catch (error) {
       console.warn("Failed to clear persisted job state", error);
     }
-  }, []);
+  }, []); // ✅ FIX: Empty deps - doesn't need syncTimerFromEngine
+
 
   const schedulePersist = useCallback(
     (state: PersistedJobState | null) => {
@@ -244,6 +525,34 @@ export const JobProvider: React.FC<{ children: React.ReactNode }> = ({
   }, [status]);
 
   useEffect(() => {
+    lastSnapshotIndexRef.current = 0;
+  }, [currentJob?.id]);
+
+  useEffect(() => {
+    if (status === "PAUSED") {
+      globalJobTimer.pause();
+
+      if (location) {
+        pausedLocationRef.current = {
+          latitude: Number(location.latitude),
+          longitude: Number(location.longitude),
+          timestamp: Number(location.timestamp) || Date.now(),
+        };
+      }
+    } else if (
+      statusTransitionRef.current === "PAUSED" &&
+      (status === "STARTED" || status === "ACTIVE")
+    ) {
+      const resumeLocation = location ?? locationRef.current ?? null;
+      globalJobTimer.resume(resumeLocation);
+      pausedLocationRef.current = null;
+      autoResumeInFlightRef.current = false;
+    }
+
+    statusTransitionRef.current = status;
+  }, [status, location]);
+
+  useEffect(() => {
     pendingActionRef.current = pendingAction;
   }, [pendingAction]);
 
@@ -277,6 +586,73 @@ export const JobProvider: React.FC<{ children: React.ReactNode }> = ({
             if (parsed?.routePoints?.length) {
               setRoutePoints(parsed.routePoints);
               routePointsRef.current = parsed.routePoints;
+            }
+            
+            // ✅ FIX: Restore timer state FIRST before anything else
+            if (parsed?.timerState) {
+              try {
+                globalJobTimer.restoreState(parsed.timerState);
+                console.log('[JobContext] ✅ Timer engine restored from persisted state');
+                
+                // ✅ CRITICAL: Immediately sync timer to UI state BEFORE any processing starts
+                const restoredState = globalJobTimer.getState();
+                if (restoredState) {
+                  // Calculate elapsed time from start time
+                  const elapsedMs = restoredState.startTime 
+                    ? Date.now() - restoredState.startTime 
+                    : 0;
+                  const elapsedSeconds = Math.floor(elapsedMs / 1000);
+                  
+                  setTimer({
+                    elapsedSeconds,
+                    waitingSeconds: restoredState.totalWaitingSeconds || 0,
+                    distanceMeters: restoredState.totalDistanceMeters || 0,
+                    speedKmh: 0, // Will be updated by processor
+                    earningsSoFar: Number.parseFloat(parsed.pricingBreakdown?.totalCost || '0') || 0,
+                  });
+                  console.log('[JobContext] ✅ Timer UI state synced immediately:', {
+                    distance: (restoredState.totalDistanceMeters || 0).toFixed(2) + 'm',
+                    waiting: (restoredState.totalWaitingSeconds || 0).toFixed(0) + 's',
+                    elapsed: elapsedSeconds + 's',
+                  });
+                }
+              } catch (timerRestoreError) {
+                console.warn('[JobContext] ⚠️ Failed to restore timer state:', timerRestoreError);
+              }
+            }
+            
+            // ✅ Restore pricing breakdown
+            if (parsed?.pricingBreakdown) {
+              setPricingBreakdown(parsed.pricingBreakdown);
+              console.log('[JobContext] ✅ Pricing breakdown restored');
+            }
+            
+            // ✅ Restore pause records
+            if (parsed?.pauseRecords?.length) {
+              setPauseRecords(parsed.pauseRecords);
+              console.log('[JobContext] ✅ Pause records restored:', parsed.pauseRecords.length);
+            }
+            
+            // ✅ Restore selected tariff (if tariff ID was saved)
+            if (parsed?.selectedTariffId && shiftContext.tariffs?.length) {
+              const savedTariff = shiftContext.tariffs.find(
+                (t) => t.id === parsed.selectedTariffId
+              );
+              if (savedTariff && typeof shiftContext.selectTariff === 'function') {
+                shiftContext
+                  .selectTariff(savedTariff)
+                  .then(() => console.log('✅ Restored selected tariff:', savedTariff.name))
+                  .catch((error) =>
+                    console.warn('⚠️ Failed to sync restored tariff via selectTariff:', error)
+                  );
+              }
+            }
+            
+            // ✅ FIX: Auto-restart job processor for trackable statuses after hydration
+            if (parsed?.job && TRACKABLE_STATUSES.has(parsed.status)) {
+              console.log('[JobContext] 🔄 Auto-restarting job processor after hydration for status:', parsed.status);
+              // Set flag to trigger processor restart in the processing effect
+              setIsProcessingJob(false); // Will be set to true by the effect
             }
           }
         }
@@ -319,13 +695,56 @@ export const JobProvider: React.FC<{ children: React.ReactNode }> = ({
       timer,
       routePoints,
       timestamp: Date.now(),
+      selectedTariffId: shiftContext.selectedTariff?.id, // ✅ Persist selected tariff ID
+      pricingBreakdown: pricingBreakdown || undefined, // ✅ Persist pricing breakdown
+      pauseRecords: pauseRecords.length > 0 ? pauseRecords : undefined, // ✅ Persist pause records
+      timerState: globalJobTimer.getState(),
     };
 
     schedulePersist(snapshot);
-  }, [hydrated, currentJob, status, timer, routePoints, schedulePersist]);
+  }, [hydrated, currentJob, status, timer, routePoints, schedulePersist, shiftContext.selectedTariff, pricingBreakdown, pauseRecords]);
+
+  // Ensure active jobs always carry a tariff snapshot for pricing/meter calculations
+  useEffect(() => {
+    if (!currentJob || currentJob.tariff || !shiftContext.selectedTariff) {
+      return;
+    }
+
+    setCurrentJob((previous) => {
+      if (!previous || previous.tariff) {
+        return previous;
+      }
+
+      console.log(
+        "[JobContext] 🧾 Attaching selected tariff snapshot to active job",
+        {
+          jobId: previous.id,
+          tariffName: shiftContext.selectedTariff?.name,
+        }
+      );
+
+      // Ensure tariff has a valid id
+      const tariffSnapshot: Tariff = { 
+        id: shiftContext.selectedTariff?.id || `tariff_${Date.now()}`,
+        name: shiftContext.selectedTariff?.name || 'Default Tariff',
+        baseFare: shiftContext.selectedTariff?.baseFare || 0,
+        perKmRate: shiftContext.selectedTariff?.perKmRate || 0,
+        perMinuteRate: shiftContext.selectedTariff?.perMinuteRate || 0,
+        minimumFare: shiftContext.selectedTariff?.minimumFare || 0,
+        ...shiftContext.selectedTariff,
+      };
+
+      return {
+        ...previous,
+        tariff: tariffSnapshot,
+        tariffName: previous.tariffName || shiftContext?.selectedTariff?.name,
+      } as ActiveJob;
+    });
+  }, [currentJob?.id, currentJob?.tariff, shiftContext.selectedTariff]);
 
   const setIncomingJob = useCallback((job: ActiveJob) => {
-    console.log("🔔 New job incoming! Playing notification sound...");
+    console.log("🔔 [setIncomingJob] Called with job:", { id: job.id, status: job.status });
+    console.log("🔔 [setIncomingJob] Playing notification sound...");
     
     // Play notification sound
     playJobNotificationSound().catch((error) => 
@@ -333,9 +752,12 @@ export const JobProvider: React.FC<{ children: React.ReactNode }> = ({
     );
     
     setPendingAction(null);
+    console.log("🔔 [setIncomingJob] Calling setCurrentJob...");
     setCurrentJob(job);
+    console.log("🔔 [setIncomingJob] Calling setStatus('INCOMING')...");
     setStatus("INCOMING");
-    setTimer({ elapsedSeconds: 0, waitingSeconds: 0, distanceMeters: 0 });
+    console.log("🔔 [setIncomingJob] Status should now be INCOMING");
+    setTimer({ elapsedSeconds: 0, waitingSeconds: 0, distanceMeters: 0, speedKmh: 0 });
     setRoutePoints([]);
     routePointsRef.current = [];
   }, []);
@@ -350,11 +772,13 @@ export const JobProvider: React.FC<{ children: React.ReactNode }> = ({
     // Set job with STARTED status
     const startedJob = { ...job, status: 'STARTED' as JobStatus };
     setCurrentJob(startedJob);
+    currentJobRef.current = startedJob;
     setStatus("STARTED");
+    statusRef.current = "STARTED";
     setPendingAction(null);
     
     // Initialize timer and route
-    setTimer({ elapsedSeconds: 0, waitingSeconds: 0, distanceMeters: 0 });
+    setTimer({ elapsedSeconds: 0, waitingSeconds: 0, distanceMeters: 0, speedKmh: 0 });
     setRoutePoints([]);
     routePointsRef.current = [];
     
@@ -365,8 +789,68 @@ export const JobProvider: React.FC<{ children: React.ReactNode }> = ({
     // Start job processor and timer immediately
     console.log("⏱️ Starting job processor and timer for walk-in job");
     globalJobTimer.start();
-    jobProcessor.startContinuousProcessing();
+    jobProcessor.startContinuousProcessing(
+      () => currentJobRef.current,
+      () => {
+        const loc = locationRef.current;
+        return loc ? {
+          latitude: loc.latitude,
+          longitude: loc.longitude,
+          accuracy: loc.accuracy,
+          speed: loc.speed || 0,
+          heading: loc.heading,
+          timestamp: loc.timestamp,
+        } : null;
+      },
+      () => {
+        // Determine movement state from location speed
+        const speed = locationRef.current?.speed || 0;
+        if (speed < 1) return 'STOPPED';
+        if (speed < 10) return 'NORMAL_SPEED';
+        if (speed < 40) return 'LITTLE_HIGH_SPEED';
+        if (speed < 70) return 'MORE_SPEED';
+        return 'TOO_HIGH_SPEED';
+      },
+      {
+        updateJob: (updates) => {
+          setCurrentJob((prev) => prev ? { ...prev, ...updates } : null);
+          if (updates.pricingBreakdown) {
+            setPricingBreakdown(updates.pricingBreakdown);
+          }
+          setTimer((prev) => ({
+            distanceMeters: updates.totalAccumulatedDistanceMeters ?? prev.distanceMeters,
+            waitingSeconds: updates.totalAccumulatedWaitingSeconds ?? prev.waitingSeconds,
+            elapsedSeconds: updates.elapsedSeconds ?? prev.elapsedSeconds,
+            speedKmh: updates.estimatedSpeedKmh ?? prev.speedKmh ?? 0,
+            earningsSoFar: updates.earningsSoFar ? parseFloat(updates.earningsSoFar) : prev.earningsSoFar,
+          }));
+        },
+        setJobStatus: (newStatus: JobStatus) => {
+          setStatus(newStatus);
+          setCurrentJob((prev) => prev ? { ...prev, status: newStatus } : prev);
+        },
+        clearJob: () => {
+          setCurrentJob(null);
+          setStatus('IDLE');
+          setPricingBreakdown(null);
+          setPauseRecords([]);
+        },
+      }
+    );
     setIsProcessingJob(true);
+    
+    // ✅ NEW: Start background meter service
+    if (location) {
+      jobMeterService.startJobMeter(
+        Date.now(),
+        0, // initial waiting seconds
+        0, // initial distance meters
+        location.latitude,
+        location.longitude
+      ).catch(error => {
+        console.error('Failed to start background meter:', error);
+      });
+    }
     
     // Emit to server that job has started
     if (location) {
@@ -381,7 +865,7 @@ export const JobProvider: React.FC<{ children: React.ReactNode }> = ({
     setStatus("IDLE");
     setCurrentJob(null);
     setPendingAction(null);
-    setTimer({ elapsedSeconds: 0, waitingSeconds: 0, distanceMeters: 0 });
+    setTimer({ elapsedSeconds: 0, waitingSeconds: 0, distanceMeters: 0, speedKmh: 0 });
     setRoutePoints([]);
     routePointsRef.current = [];
     
@@ -389,16 +873,46 @@ export const JobProvider: React.FC<{ children: React.ReactNode }> = ({
     setPricingBreakdown(null);
     setPauseRecords([]);
     setIsProcessingJob(false);
+    pendingPaymentSnapshotRef.current = null;
+    pausedLocationRef.current = null;
+    autoResumeInFlightRef.current = false;
     
     // Stop job processing if active
     jobProcessor.stopContinuousProcessing();
     globalJobTimer.reset();
+    
+    // ✅ NEW: Stop background meter service
+    jobMeterService.stopJobMeter().catch(error => {
+      console.warn('Failed to stop background meter:', error);
+    });
     
     clearPersistedJobState().catch((error) =>
       console.warn("Failed to clear job state on reset", error)
     );
     schedulePersist(null);
   }, [clearPersistedJobState, schedulePersist]);
+
+  // ✅ NEW: Subscribe to background meter updates
+  useEffect(() => {
+    if (status !== "STARTED") return;
+
+    console.log('[JobContext] 📡 Subscribing to background meter updates');
+    const unsubscribe = jobMeterService.onMeterUpdate((update) => {
+      console.log('[JobContext] 🔔 Meter update from background:', update);
+      
+      // Update timer state from background service
+      setTimer({
+        elapsedSeconds: update.elapsedSeconds,
+        waitingSeconds: update.waitingSeconds,
+        distanceMeters: update.distanceMeters,
+      });
+    });
+
+    return () => {
+      console.log('[JobContext] 📡 Unsubscribing from background meter updates');
+      unsubscribe();
+    };
+  }, [status]);
 
   useEffect(() => {
     if (!currentJob || !location || !TRACKABLE_STATUSES.has(status)) {
@@ -442,10 +956,10 @@ export const JobProvider: React.FC<{ children: React.ReactNode }> = ({
           return previous;
         }
 
-        setTimer((prevTimer) => ({
-          ...prevTimer,
-          distanceMeters: prevTimer.distanceMeters + incrementMeters,
-        }));
+    setTimer((prevTimer) => ({
+      ...prevTimer,
+      distanceMeters: prevTimer.distanceMeters + incrementMeters,
+    }));
       }
 
       const nextPoints = previous.length >= MAX_ROUTE_POINTS
@@ -456,12 +970,89 @@ export const JobProvider: React.FC<{ children: React.ReactNode }> = ({
     });
   }, [currentJob, location, status]);
 
+  useEffect(() => {
+    if (
+      !currentJob?.id ||
+      !["STARTED", "PAUSED", "ACTIVE"].includes(status)
+    ) {
+      return;
+    }
+
+    emitPersistentSnapshot("interval");
+    const interval = setInterval(() => {
+      emitPersistentSnapshot("interval");
+    }, SNAPSHOT_INTERVAL_MS);
+
+    return () => {
+      clearInterval(interval);
+    };
+  }, [currentJob?.id, status, emitPersistentSnapshot]);
+
+  useEffect(() => {
+    if (status !== "PAUSED") {
+      pausedLocationRef.current = null;
+      autoResumeInFlightRef.current = false;
+      return;
+    }
+
+    if (!location) {
+      return;
+    }
+
+    if (!pausedLocationRef.current) {
+      pausedLocationRef.current = {
+        latitude: Number(location.latitude),
+        longitude: Number(location.longitude),
+        timestamp: Number(location.timestamp) || Date.now(),
+      };
+      return;
+    }
+
+    const lastPoint = pausedLocationRef.current;
+    const movedMeters =
+      calculateDistance(
+        lastPoint.latitude,
+        lastPoint.longitude,
+        Number(location.latitude),
+        Number(location.longitude)
+      ) * 1000;
+    const speedKmh =
+      typeof location.speed === "number"
+        ? Math.max(location.speed * 3.6, 0)
+        : 0;
+
+    if (
+      (movedMeters >= AUTO_RESUME_DISTANCE_METERS ||
+        speedKmh >= AUTO_RESUME_SPEED_KMH) &&
+      !autoResumeInFlightRef.current
+    ) {
+      autoResumeInFlightRef.current = true;
+      resumeJob()
+        .then(() => {
+          console.log(
+            "[JobContext] 🔄 Auto-resumed job due to movement while paused",
+            {
+              movedMeters: movedMeters.toFixed(2),
+              speedKmh: speedKmh.toFixed(1),
+            }
+          );
+        })
+        .catch((error) => {
+          console.error(
+            "[JobContext] ❌ Failed to auto-resume job from movement:",
+            error
+          );
+          autoResumeInFlightRef.current = false;
+        });
+    }
+  }, [status, location, resumeJob]);
+
   // ✨ NEW: Job Processor Integration
   // Start/stop job processing based on job status
   useEffect(() => {
-    // Only process when job is in STARTED status
-    if (status === "STARTED" && currentJob && !isProcessingJob) {
-      console.log('[JobContext] 🚀 Starting job processor for job:', currentJob.id);
+    // Process when job is STARTED or PAUSED (needed for hydration after app restart)
+    if ((status === "STARTED" || status === "PAUSED") && currentJob && !isProcessingJob) {
+      console.log('[JobContext] 🚀 Starting job processor for job:', currentJob.id, 'status:', status);
       setIsProcessingJob(true);
       
       // Start coordinate tracking
@@ -471,7 +1062,11 @@ export const JobProvider: React.FC<{ children: React.ReactNode }> = ({
       
       // Initialize timer from job data (for crash recovery)
       globalJobTimer.initializeFromJob(currentJob);
-      globalJobTimer.start();
+      
+      // Start timer only if job is STARTED (not if PAUSED)
+      if (status === "STARTED") {
+        globalJobTimer.start();
+      }
       
       // Start continuous processing
       jobProcessor.startContinuousProcessing(
@@ -518,6 +1113,7 @@ export const JobProvider: React.FC<{ children: React.ReactNode }> = ({
               distanceMeters: updates.totalAccumulatedDistanceMeters ?? prev.distanceMeters,
               waitingSeconds: updates.totalAccumulatedWaitingSeconds ?? prev.waitingSeconds,
               elapsedSeconds: updates.elapsedSeconds ?? prev.elapsedSeconds,
+              speedKmh: updates.estimatedSpeedKmh ?? prev.speedKmh ?? 0,
               earningsSoFar: updates.earningsSoFar ? parseFloat(updates.earningsSoFar) : prev.earningsSoFar,
             }));
             
@@ -543,18 +1139,19 @@ export const JobProvider: React.FC<{ children: React.ReactNode }> = ({
     }
     
     // Stop processing when job is no longer active
-    if (status !== "STARTED" && isProcessingJob) {
+    if (status !== "STARTED" && status !== "PAUSED" && isProcessingJob) {
       console.log('[JobContext] ⏸️ Stopping job processor');
       setIsProcessingJob(false);
       jobProcessor.stopContinuousProcessing();
     }
-    
+  }, [status, currentJob?.id, isProcessingJob]);
+
+  // Ensure processor stops on unmount
+  useEffect(() => {
     return () => {
-      if (isProcessingJob) {
-        jobProcessor.stopContinuousProcessing();
-      }
+      jobProcessor.stopContinuousProcessing();
     };
-  }, [status, currentJob?.id, isProcessingJob, location]);
+  }, []);
 
   const mapProgressToStatus = useCallback(
     (rawStatus?: string | null): JobStatus | null => {
@@ -604,6 +1201,45 @@ export const JobProvider: React.FC<{ children: React.ReactNode }> = ({
     },
     []
   );
+
+  // ✅ NEW: Update background meter service with location changes
+  useEffect(() => {
+    console.log('🎯 JobContext location effect:', {
+      status,
+      hasLocation: !!location,
+      hasCurrentJob: !!currentJob,
+      location: location ? {
+        lat: location.latitude.toFixed(6),
+        lng: location.longitude.toFixed(6),
+        accuracy: location.accuracy,
+        speed: location.speed
+      } : null
+    });
+    
+    if (status === "STARTED" && location && currentJob) {
+      console.log('📍 Updating background meter with location:', {
+        lat: location.latitude,
+        lng: location.longitude,
+        accuracy: location.accuracy,
+        speed: location.speed
+      });
+      
+      jobMeterService.updateLocation(
+        location.latitude,
+        location.longitude,
+        location.accuracy ?? 0,
+        location.speed ?? 0
+      ).catch(error => {
+        console.warn('Failed to update background meter location:', error);
+      });
+    } else {
+      console.log('❌ Not updating meter - conditions not met:', {
+        statusIsStarted: status === "STARTED",
+        hasLocation: !!location,
+        hasCurrentJob: !!currentJob
+      });
+    }
+  }, [status, location, currentJob]);
 
   // Listen for job assignments and lifecycle events
   useEffect(() => {
@@ -674,6 +1310,45 @@ export const JobProvider: React.FC<{ children: React.ReactNode }> = ({
       return new Date(Date.now() + 30000).toISOString();
     };
 
+    const resolveTariffForJob = (payload: any): Tariff | null => {
+      const payloadTariff =
+        payload?.tariff ||
+        payload?.tariffDetails ||
+        payload?.tariffInfo ||
+        payload?.tariffSnapshot ||
+        null;
+
+      const normalizedPayloadTariff = normalizeTariffSnapshot(payloadTariff);
+      if (normalizedPayloadTariff) {
+        return normalizedPayloadTariff;
+      }
+
+      const tariffId =
+        payload?.tariffId ??
+        payload?.tariff_id ??
+        payloadTariff?.tariffId ??
+        payloadTariff?.id;
+
+      if (
+        tariffId &&
+        Array.isArray(shiftContext.tariffs) &&
+        shiftContext.tariffs.length > 0
+      ) {
+        const matched = shiftContext.tariffs.find(
+          (tariff) => String(tariff.id) === String(tariffId)
+        );
+        if (matched) {
+          return { ...matched };
+        }
+      }
+
+      if (shiftContext.selectedTariff) {
+        return { ...shiftContext.selectedTariff };
+      }
+
+      return null;
+    };
+
     const buildActiveJobFromPayload = (raw: any): ActiveJob => {
       const payload = raw?.job ?? raw;
       const internalId =
@@ -705,6 +1380,7 @@ export const JobProvider: React.FC<{ children: React.ReactNode }> = ({
         payload?.customer?.phone ??
         payload?.passenger?.phone ??
         "";
+      const jobTariff = resolveTariffForJob(payload) || undefined;
 
       return {
         id: String(internalId),
@@ -743,7 +1419,12 @@ export const JobProvider: React.FC<{ children: React.ReactNode }> = ({
           payload?.vehicle_type ??
           payload?.requirements?.vehicleType ??
           null,
-        tariffName: payload?.tariff?.name ?? payload?.tariffName ?? null,
+        tariff: jobTariff,
+        tariffName:
+          jobTariff?.name ??
+          payload?.tariff?.name ??
+          payload?.tariffName ??
+          null,
         passenger: {
           id:
             payload?.customerId ??
@@ -784,7 +1465,7 @@ export const JobProvider: React.FC<{ children: React.ReactNode }> = ({
       return currentCandidates.some((id) => candidates.includes(id));
     };
 
-    const handleJobAssigned = (raw: any) => {
+    const handleJobAssigned = async (raw: any) => {
       console.log("🎯 JobContext: Job assignment received:", raw);
       console.log("🎯 JobContext: Raw payload:", JSON.stringify(raw, null, 2));
       console.log("🎯 JobContext: Current socket status:", {
@@ -793,9 +1474,21 @@ export const JobProvider: React.FC<{ children: React.ReactNode }> = ({
       });
 
       try {
+        // ✅ REFRESH TARIFF DATA: Ensure we have latest tariff before building job
+        console.log("🔄 JobContext: Refreshing tariff data for new job assignment...");
+        await shiftContext.refreshTariffs().catch((error) => {
+          console.error("⚠️ JobContext: Failed to refresh tariffs, using cached:", error);
+        });
+
         const job = buildActiveJobFromPayload(raw);
         console.log("🎯 JobContext: Built active job:", job);
         setIncomingJob(job);
+
+        if (Platform.OS === "android") {
+          ForegroundService.bringToForeground().catch((error) =>
+            console.error("Failed to bring app to foreground:", error)
+          );
+        }
 
         playJobNotificationSound().catch((error) => {
           console.error("Failed to play notification sound:", error);
@@ -813,7 +1506,17 @@ export const JobProvider: React.FC<{ children: React.ReactNode }> = ({
         return;
       }
 
-      console.log("🚫 JobContext: Job unassigned", raw);
+      console.log("🚫 JobContext: Job unassigned/recalled by dispatcher", raw);
+      
+      // Show alert to driver
+      const reason = raw?.reason || raw?.message || "The dispatcher has recalled this job.";
+      Alert.alert(
+        "Job Recalled",
+        reason,
+        [{ text: "OK", style: "default" }],
+        { cancelable: true }
+      );
+      
       clearJob();
     };
 
@@ -851,6 +1554,22 @@ export const JobProvider: React.FC<{ children: React.ReactNode }> = ({
         return;
       }
 
+      if (
+        statusRef.current === "PENDING_PAYMENT" &&
+        !["COMPLETED", "CANCELLED", "REJECTED", "NO_SHOW", "RECALLED", "IDLE"].includes(
+          nextStatus
+        )
+      ) {
+        console.log(
+          "[JobContext] ⏸️ Ignoring server status update while collecting payment",
+          {
+            incoming: nextStatus,
+            jobId: currentJobRef.current?.id,
+          }
+        );
+        return;
+      }
+
       if (nextStatus === "IDLE") {
         clearJob();
         return;
@@ -879,6 +1598,22 @@ export const JobProvider: React.FC<{ children: React.ReactNode }> = ({
 
       const confirmedStatus = mapProgressToStatus(raw?.progressStatus);
       if (confirmedStatus) {
+        if (
+          statusRef.current === "PENDING_PAYMENT" &&
+          !["COMPLETED", "CANCELLED", "REJECTED", "NO_SHOW", "RECALLED", "IDLE"].includes(
+            confirmedStatus
+          )
+        ) {
+          console.log(
+            "[JobContext] ⏸️ Ignoring confirmation status while collecting payment",
+            {
+              incoming: confirmedStatus,
+              jobId: currentJobRef.current?.id,
+            }
+          );
+          return;
+        }
+
         if (confirmedStatus === "IDLE") {
           clearJob();
         } else if (
@@ -930,6 +1665,7 @@ export const JobProvider: React.FC<{ children: React.ReactNode }> = ({
       socket.off("server:job:confirmed", handleServerJobConfirmed);
       socket.off("server:job:error", handleServerJobError);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     driver?.id,
     driver?.companyId,
@@ -937,6 +1673,72 @@ export const JobProvider: React.FC<{ children: React.ReactNode }> = ({
     setIncomingJob,
     clearJob,
     mapProgressToStatus,
+    // ❌ REMOVED: shiftContext.selectedTariff, shiftContext.tariffs
+    // These were causing infinite loops because state restoration updates them,
+    // which re-triggered socket setup, which re-authenticated, which restored state again
+    // The values are used in event handlers which access them via closure/context
+  ]);
+
+  useEffect(() => {
+    const jobId = currentJob?.id;
+    const driverId = driver?.id;
+
+    console.log('[video] 🎥 Auto-start check:', {
+      jobId,
+      driverId,
+      resolvedCompanyId,
+      status,
+      videoStatus: videoStreamingState.status,
+      videoJobId: videoStreamingState.jobId,
+      statusInSet: VIDEO_STREAMING_JOB_STATUSES.has(status),
+    });
+
+    if (!jobId || !driverId || !resolvedCompanyId) {
+      console.log('[video] ❌ Missing context for video:', { jobId, driverId, resolvedCompanyId });
+      if (videoStreamingState.status !== "idle") {
+        stopDriverVideoStream("missing_context").catch((error) => {
+          console.warn("[video] Cleanup after missing context failed", error);
+        });
+      }
+      return;
+    }
+
+    const shouldAutoStart =
+      VIDEO_STREAMING_JOB_STATUSES.has(status) &&
+      (videoStreamingState.status === "idle" ||
+        videoStreamingState.jobId !== jobId);
+
+    console.log('[video] 🎬 Should auto-start:', shouldAutoStart);
+
+    if (shouldAutoStart) {
+      console.log('[video] 🚀 Starting video stream...');
+      startDriverVideoStream({
+        jobId,
+        driverId,
+        companyId: resolvedCompanyId,
+      }).catch((error) => {
+        console.warn("[video] Failed to auto-start video stream", error);
+      });
+      return;
+    }
+
+    const shouldAutoStop =
+      (!VIDEO_STREAMING_JOB_STATUSES.has(status) ||
+        videoStreamingState.jobId !== jobId) &&
+      videoStreamingState.status !== "idle";
+
+    if (shouldAutoStop) {
+      stopDriverVideoStream("status_not_streamable").catch((error) => {
+        console.warn("[video] Failed to auto-stop video stream", error);
+      });
+    }
+  }, [
+    status,
+    currentJob?.id,
+    driver?.id,
+    resolvedCompanyId,
+    videoStreamingState.status,
+    videoStreamingState.jobId,
   ]);
 
   // ✅ NEW: Register socket listener for complete driver state (shift, vehicle, tariff, job)
@@ -953,6 +1755,25 @@ export const JobProvider: React.FC<{ children: React.ReactNode }> = ({
       if (state.job) {
         const serverJob = state.job;
         console.log(`✅ JobContext: Restoring active job: ${serverJob.id}, status: ${serverJob.status}`);
+        
+        // ✅ FIX: Don't override local state if we already have this job with a more recent status change
+        // This prevents socket reconnection from overriding pause/resume/complete actions
+        if (currentJobRef.current?.id === serverJob.id) {
+          const localStatus = statusRef.current;
+          
+          // If local status is PAUSED, COMPLETED, or CANCELLED, trust local state over server
+          // Server might have stale STARTED status when we just paused locally
+          if (localStatus === 'PAUSED' || localStatus === 'COMPLETED' || localStatus === 'CANCELLED') {
+            console.log(`⚠️ JobContext: Ignoring server status (${serverJob.status}) - local status is ${localStatus} (more recent)`);
+            return;
+          }
+          
+          // If local status is PENDING_PAYMENT, don't revert to STARTED
+          if (localStatus === 'PENDING_PAYMENT' && serverJob.status === 'STARTED') {
+            console.log(`⚠️ JobContext: Ignoring server STARTED - local is PENDING_PAYMENT (more recent)`);
+            return;
+          }
+        }
         
         // Build ActiveJob from server data
         const activeJob: ActiveJob = {
@@ -1181,16 +2002,29 @@ export const JobProvider: React.FC<{ children: React.ReactNode }> = ({
     } : null);
     
     setStatus('PAUSED');
+    globalJobTimer.pause();
+    pausedLocationRef.current = location
+      ? {
+          latitude: Number(location.latitude),
+          longitude: Number(location.longitude),
+          timestamp: Number(location.timestamp) || Date.now(),
+        }
+      : null;
+    autoResumeInFlightRef.current = false;
     
-    // Stop job processing
-    jobProcessor.stopContinuousProcessing();
-    setIsProcessingJob(false);
+    // Flush latest timer metrics before pausing processors
+    syncTimerFromEngine();
+    
+    // ✅ NEW: Pause background meter service
+    jobMeterService.pauseJobMeter().catch(error => {
+      console.warn('Failed to pause background meter:', error);
+    });
     
     // Emit to backend
     emitJobProgress(currentJob.id, 'PAUSED', location ?? undefined);
     
     console.log('[JobContext] ✅ Job paused successfully');
-  }, [currentJob, status, pauseRecords, location]);
+  }, [currentJob, status, pauseRecords, location, syncTimerFromEngine]);
 
   // ✨ NEW: Resume Job
   const resumeJob = useCallback(async () => {
@@ -1220,6 +2054,9 @@ export const JobProvider: React.FC<{ children: React.ReactNode }> = ({
     
     setPauseRecords(updatedPauseRecords);
     
+    // ✅ FIX: Sync timer from engine before resuming (ensure UI has latest state)
+    syncTimerFromEngine();
+    
     // Update job
     setCurrentJob((prev) => prev ? {
       ...prev,
@@ -1229,12 +2066,79 @@ export const JobProvider: React.FC<{ children: React.ReactNode }> = ({
     } : null);
     
     setStatus('STARTED');
+    const resumeLocation = location ?? locationRef.current ?? null;
+    globalJobTimer.resume(resumeLocation);
+    pausedLocationRef.current = null;
+    autoResumeInFlightRef.current = false;
+    
+    // ✅ NEW: Resume background meter service
+    jobMeterService.resumeJobMeter().catch(error => {
+      console.warn('Failed to resume background meter:', error);
+    });
     
     // Emit to backend
     emitJobProgress(currentJob.id, 'STARTED', location ?? undefined);
     
     console.log('[JobContext] ✅ Job resumed successfully');
-  }, [currentJob, status, pauseRecords, location]);
+  }, [currentJob, status, pauseRecords, location, syncTimerFromEngine]);
+
+  const resumePendingPayment = useCallback(() => {
+    if (status !== 'PENDING_PAYMENT') {
+      return;
+    }
+
+    console.log('[JobContext] 🔄 Resuming job after leaving payment screen');
+    const snapshot = pendingPaymentSnapshotRef.current;
+    if (snapshot?.timerState) {
+      globalJobTimer.restoreState(snapshot.timerState);
+      const resumeLocation = locationRef.current ?? null;
+      globalJobTimer.resume(resumeLocation);
+      syncTimerFromEngine();
+    }
+    pendingPaymentSnapshotRef.current = null;
+    setStatus('STARTED');
+    setIsProcessingJob(false);
+  }, [status, syncTimerFromEngine]);
+
+  const buildPricingSnapshot = useCallback(
+    (
+      tariff: Tariff | null | undefined,
+      metrics: {
+        distanceMeters: number;
+        waitingSeconds: number;
+        elapsedSeconds: number;
+      }
+    ): PricingBreakdown | null => {
+      if (!tariff) {
+        console.warn(
+          "[JobContext] ⚠️ Unable to build pricing snapshot - missing tariff"
+        );
+        return null;
+      }
+
+      const baseFare = toSafeNumber(tariff.baseFare, 0);
+      const perKmRate = toSafeNumber(tariff.perKmRate, 0);
+      const perMinuteRate = toSafeNumber(tariff.perMinuteRate, 0);
+      const waitingRate = getWaitingRatePerMinute(tariff);
+
+      const distanceCost = (metrics.distanceMeters / 1000) * perKmRate;
+      const durationCost = (metrics.elapsedSeconds / 60) * perMinuteRate;
+      const waitingCost = (metrics.waitingSeconds / 60) * waitingRate;
+      const totalCost = baseFare + distanceCost + durationCost + waitingCost;
+
+      return {
+        startingPrice: baseFare.toFixed(2),
+        distanceCost: distanceCost.toFixed(2),
+        durationCost: durationCost.toFixed(2),
+        waitingCost: waitingCost.toFixed(2),
+        totalDistance: Number(metrics.distanceMeters.toFixed(2)),
+        duration: Number(metrics.elapsedSeconds.toFixed(2)),
+        waitingSeconds: Number(metrics.waitingSeconds.toFixed(2)),
+        totalCost: totalCost.toFixed(2),
+      };
+    },
+    []
+  );
 
   // ✨ PREPARE JOB FOR PAYMENT (NOT complete yet!)
   const prepareJobForPayment = useCallback(async (): Promise<ActiveJob | null> => {
@@ -1245,16 +2149,43 @@ export const JobProvider: React.FC<{ children: React.ReactNode }> = ({
     
     console.log('[JobContext] 💰 Preparing job for payment collection');
     
-    // Stop processing
-    jobProcessor.stopContinuousProcessing();
-    setIsProcessingJob(false);
+    // Ensure latest timer snapshot is flushed before freezing
+    syncTimerFromEngine();
     
-    // Get final data
-    const finalData = await jobProcessor.finalizeJob();
-    
-    // Get current timer state
     const timerState = globalJobTimer.getState();
     
+    const tariffForPricing = currentJob.tariff || shiftContext.selectedTariff;
+    const elapsedFallback =
+      timerState.startTime && timerState.lastUpdateTime
+        ? (timerState.lastUpdateTime - timerState.startTime) / 1000
+        : 0;
+    const meterSnapshot = {
+      distanceMeters: toSafeNumber(
+        timer.distanceMeters,
+        toSafeNumber(timerState.totalDistanceMeters, 0)
+      ),
+      waitingSeconds: toSafeNumber(
+        timer.waitingSeconds,
+        toSafeNumber(timerState.totalWaitingSeconds, 0)
+      ),
+      elapsedSeconds: toSafeNumber(timer.elapsedSeconds, elapsedFallback),
+    };
+
+    let nextPricingBreakdown = pricingBreakdown;
+    if (!nextPricingBreakdown) {
+      nextPricingBreakdown = buildPricingSnapshot(
+        tariffForPricing,
+        meterSnapshot
+      );
+      if (nextPricingBreakdown) {
+        setPricingBreakdown(nextPricingBreakdown);
+      }
+    }
+
+    const totalCostValue = nextPricingBreakdown
+      ? Number(nextPricingBreakdown.totalCost)
+      : undefined;
+
     // Build job data with PENDING_PAYMENT status (NOT completed!)
     const pendingPaymentJobData: ActiveJob = {
       ...currentJob,
@@ -1262,29 +2193,58 @@ export const JobProvider: React.FC<{ children: React.ReactNode }> = ({
       complete_job_time: new Date().toISOString(),
       
       // Add final metrics
-      totalAccumulatedDistanceMeters: timerState.totalDistanceMeters,
-      totalAccumulatedWaitingSeconds: timerState.totalWaitingSeconds,
+      totalAccumulatedDistanceMeters: meterSnapshot.distanceMeters,
+      totalAccumulatedWaitingSeconds: meterSnapshot.waitingSeconds,
       
       // Add pause records
       pause_records: pauseRecords,
       
       // Add pricing breakdown
-      pricingBreakdown: pricingBreakdown,
+      pricingBreakdown: nextPricingBreakdown ?? undefined,
+      fare: totalCostValue ?? currentJob.fare,
+      earningsSoFar:
+        totalCostValue !== undefined
+          ? totalCostValue.toFixed(2)
+          : currentJob.earningsSoFar,
     };
     
+    pendingPaymentSnapshotRef.current = {
+      timerState,
+      pricing: nextPricingBreakdown ?? null,
+    };
+
+    globalJobTimer.pause();
+    jobProcessor.stopContinuousProcessing();
+    setIsProcessingJob(false);
+
     // Update state to PENDING_PAYMENT (not COMPLETED!)
     setCurrentJob(pendingPaymentJobData);
     setStatus('PENDING_PAYMENT');
+    emitJobProgress(currentJob.id, 'PENDING_PAYMENT', location ?? undefined);
+    emitDriverStatus('BUSY', location ?? undefined);
     
     console.log('[JobContext] ✅ Job prepared for payment', {
       distance: `${timerState.totalDistanceMeters.toFixed(2)}m`,
       waiting: `${timerState.totalWaitingSeconds}s`,
-      totalCost: pricingBreakdown?.totalCost,
-      coordinatePoints: finalData.coordinateHistory?.totalPoints,
+      totalCost: nextPricingBreakdown?.totalCost,
     });
+
+    emitPersistentSnapshot('final');
     
     return pendingPaymentJobData;
-  }, [currentJob, pauseRecords, pricingBreakdown, location]);
+  }, [
+    currentJob,
+    pauseRecords,
+    pricingBreakdown,
+    location,
+    timer.distanceMeters,
+    timer.waitingSeconds,
+    timer.elapsedSeconds,
+    buildPricingSnapshot,
+    shiftContext.selectedTariff,
+    emitPersistentSnapshot,
+    syncTimerFromEngine,
+  ]);
 
   // ✨ COMPLETE JOB (called AFTER payment is collected)
   const completeJob = useCallback(async (paymentMethod: string, amountPaid: number): Promise<void> => {
@@ -1292,16 +2252,60 @@ export const JobProvider: React.FC<{ children: React.ReactNode }> = ({
       console.warn('[JobContext] No job to complete');
       return;
     }
+
+    if (status !== 'PENDING_PAYMENT') {
+      console.warn('[JobContext] ⚠️ completeJob called while not collecting payment - aborting to keep driver BUSY', {
+        jobId: currentJob.id,
+        currentStatus: status,
+      });
+      return;
+    }
     
-    console.log('[JobContext] 🏁 Completing job after payment');
+    console.log('[JobContext] 🏁 Completing job after payment', {
+      jobId: currentJob.id,
+      paymentMethod,
+      amountPaid,
+      currentLocation: location ? {
+        lat: location.latitude,
+        lng: location.longitude
+      } : 'No location available'
+    });
     
     // Update to COMPLETED status
     setCurrentJob((prev) => prev ? { ...prev, status: 'COMPLETED' } : null);
     setStatus('COMPLETED');
     
-    // Emit to backend with payment info
-    emitJobProgress(currentJob.id, 'COMPLETED', location ?? undefined);
+    let finalData: Awaited<ReturnType<typeof jobProcessor.finalizeJob>> | null = null;
+    try {
+      finalData = await jobProcessor.finalizeJob();
+    } catch (error) {
+      console.warn('[JobContext] Failed to finalize job processor during completion:', error);
+    }
+    pendingPaymentSnapshotRef.current = null;
+    
+    // ✅ NEW: Get current location for actual drop-off
+    const dropOffLocation = location ? {
+      latitude: location.latitude,
+      longitude: location.longitude,
+      timestamp: new Date().toISOString(),
+    } : undefined;
+    
+    // ✅ Emit completion with drop-off location and final amount
+    // This will be caught by the backend to update the job record
+    emitJobProgress(currentJob.id, 'COMPLETED', dropOffLocation, {
+      finalAmount: amountPaid,
+      paymentMethod,
+      completedAt: new Date().toISOString(),
+    });
+    
     emitDriverStatus('AVAILABLE', location ?? undefined);
+    emitPersistentSnapshot('final');
+
+    if (refreshShiftRecentJobs) {
+      refreshShiftRecentJobs(3).catch((error) =>
+        console.error('[JobContext] Failed to refresh ride history after completion:', error)
+      );
+    }
     
     // Clear job after a short delay
     setTimeout(() => {
@@ -1311,8 +2315,9 @@ export const JobProvider: React.FC<{ children: React.ReactNode }> = ({
     console.log('[JobContext] ✅ Job completed and payment recorded', {
       paymentMethod,
       amountPaid,
+      dropOffLocation,
     });
-  }, [currentJob, location, clearJob]);
+  }, [currentJob, location, clearJob, refreshShiftRecentJobs, emitPersistentSnapshot, status]);
 
   // ✅ NEW: Change tariff mid-ride with automatic price recalculation
   const changeTariff = useCallback(async (newTariff: any): Promise<void> => {
@@ -1375,11 +2380,13 @@ export const JobProvider: React.FC<{ children: React.ReactNode }> = ({
       //   changePoint: tariffChangePoint,
       // });
       
+      const newWaitingRate = getWaitingRatePerMinute(newTariff);
+
       console.log('[JobContext] ✅ Tariff changed successfully - pricing will recalculate', {
         newRates: {
           perKm: newTariff.perKmRate,
           perMin: newTariff.perMinuteRate,
-          waiting: newTariff.waitingTimeRate,
+          waiting: newWaitingRate,
         },
         changePoint: tariffChangePoint,
       });
@@ -1468,7 +2475,9 @@ export const JobProvider: React.FC<{ children: React.ReactNode }> = ({
               distanceMeters: currentTimer.distanceMeters,
               waitingSeconds: currentTimer.waitingSeconds,
               currentFare: currentTimer.earningsSoFar ?? currentJob.fare ?? 0,
-              speedKmh: location?.speed ?? 0,
+              speedKmh:
+                currentTimer.speedKmh ??
+                Math.max(((location?.speed ?? 0) as number) * 3.6, 0),
             },
             location ?? undefined
           );
@@ -1520,9 +2529,13 @@ export const JobProvider: React.FC<{ children: React.ReactNode }> = ({
       pauseRecords,
       pauseJob,
       resumeJob,
+      resumePendingPayment,
       prepareJobForPayment, // ✅ NEW
       completeJob,
       changeTariff, // ✅ NEW: Change tariff mid-ride
+      videoStreamingState,
+      startVideoStreaming: startVideoStreamingManually,
+      stopVideoStreaming: stopVideoStreamingManually,
     }),
     [
       status,
@@ -1543,9 +2556,13 @@ export const JobProvider: React.FC<{ children: React.ReactNode }> = ({
       pauseRecords,
       pauseJob,
       resumeJob,
+      resumePendingPayment,
       prepareJobForPayment, // ✅ NEW
       completeJob,
       changeTariff, // ✅ NEW
+      videoStreamingState,
+      startVideoStreamingManually,
+      stopVideoStreamingManually,
     ]
   );
 
@@ -1565,6 +2582,7 @@ export const useJob = (): JobContextValue => {
         elapsedSeconds: 0,
         waitingSeconds: 0,
         distanceMeters: 0,
+        speedKmh: 0,
       },
       pendingAction: null,
       setIncomingJob: () => {},
@@ -1581,9 +2599,24 @@ export const useJob = (): JobContextValue => {
       pauseRecords: [],
       pauseJob: async () => {},
       resumeJob: async () => {},
+      resumePendingPayment: () => {},
       prepareJobForPayment: async () => null,
       completeJob: async () => {},
       changeTariff: async () => {}, // ✅ NEW
+      videoStreamingState: {
+        status: "idle",
+        jobId: null,
+        driverId: null,
+        companyId: null,
+        localStream: null,
+        viewerCount: 0,
+        startedAt: null,
+        lastUpdatedAt: Date.now(),
+        error: null,
+        lastStoppedReason: null,
+      },
+      startVideoStreaming: async () => null,
+      stopVideoStreaming: async () => {},
     };
   }
   return context;

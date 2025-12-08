@@ -1,22 +1,22 @@
-import React, { useState } from 'react';
-import { AxiosError } from 'axios';
-import {
-  KeyboardAvoidingView,
-  Platform,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View
-} from 'react-native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
-import { AuthStackParamList } from '../../navigation/RootNavigator';
-import Typography from '../../components/design/Typography';
-import FormTextInput from '../../components/design/FormTextInput';
-import PrimaryButton from '../../components/design/buttons/PrimaryButton';
-import { Colors } from '../../theme/colors';
-import { useAuth } from '../../context/AuthContext';
+import { AxiosError } from 'axios';
+import React, { useState } from 'react';
+import {
+    KeyboardAvoidingView,
+    Platform,
+    ScrollView,
+    StyleSheet,
+    Text,
+    TouchableOpacity,
+    View
+} from 'react-native';
 import Toast from 'react-native-toast-message';
+import FormTextInput from '../../components/design/FormTextInput';
+import Typography from '../../components/design/Typography';
+import PrimaryButton from '../../components/design/buttons/PrimaryButton';
+import { useAuth } from '../../context/AuthContext';
+import { AuthStackParamList } from '../../navigation/RootNavigator';
+import { Colors } from '../../theme/colors';
 
 export type RegisterScreenProps = NativeStackScreenProps<AuthStackParamList, 'Register'>;
 
@@ -175,7 +175,8 @@ const RegisterScreen: React.FC<RegisterScreenProps> = ({ navigation }) => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: Colors.surface.default
+    backgroundColor: Colors.surface.default,
+    paddingTop: 40
   },
   content: {
     padding: 24,

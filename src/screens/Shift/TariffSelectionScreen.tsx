@@ -1,14 +1,15 @@
 import { NativeStackScreenProps } from "@react-navigation/native-stack";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  ActivityIndicator,
-  FlatList,
-  RefreshControl,
-  SafeAreaView,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View,
+    ActivityIndicator,
+    Alert,
+    FlatList,
+    RefreshControl,
+    SafeAreaView,
+    StyleSheet,
+    Text,
+    TouchableOpacity,
+    View
 } from "react-native";
 import Toast from "react-native-toast-message";
 import MCIcon from "react-native-vector-icons/MaterialCommunityIcons";
@@ -99,6 +100,11 @@ const TariffSelectionScreen: React.FC<TariffSelectionScreenProps> = ({
   const { vehicleId, mode } = route.params;
   const { driver } = useAuth();
   const {
+    vehicles,
+    vehiclesLoading,
+    selectedVehicle,
+    selectVehicle,
+    refreshVehicles,
     tariffs,
     tariffsLoading,
     tariffsError,
@@ -107,7 +113,7 @@ const TariffSelectionScreen: React.FC<TariffSelectionScreenProps> = ({
     selectTariff,
     startShift,
     refreshCurrentShift,
-    refreshRideHistory,
+    refreshRecentJobs,
     activeShift,
   } = useShift();
   const { location: currentLocation } = useLocation();
@@ -127,6 +133,15 @@ const TariffSelectionScreen: React.FC<TariffSelectionScreenProps> = ({
   const [isStartingShift, setIsStartingShift] = useState(false);
   const isChangeMode = mode === "change" || Boolean(activeShift);
 
+  // Fetch vehicles when screen loads
+  useEffect(() => {
+    if (driver?.id) {
+      refreshVehicles().catch((error) =>
+        console.error("Vehicle refresh error", error)
+      );
+    }
+  }, [driver?.id, refreshVehicles]);
+
   useEffect(() => {
     if (driver?.companyId) {
       refreshTariffs(driver.companyId).catch((error) =>
@@ -138,11 +153,23 @@ const TariffSelectionScreen: React.FC<TariffSelectionScreenProps> = ({
   const handleRefresh = useCallback(async () => {
     try {
       setRefreshing(true);
-      await Promise.all([refreshTariffs(driver?.companyId || undefined), forceRefresh()]);
+      // ✅ Refresh vehicles, tariffs, and zone info
+      if (currentZone?.id) {
+        await Promise.all([
+          refreshVehicles(),
+          refreshTariffs(driver?.companyId || undefined),
+          forceRefresh()
+        ]);
+      } else {
+        await Promise.all([
+          refreshVehicles(),
+          refreshTariffs(driver?.companyId || undefined)
+        ]);
+      }
     } finally {
       setRefreshing(false);
     }
-  }, [driver?.companyId, forceRefresh, refreshTariffs]);
+  }, [driver?.companyId, forceRefresh, refreshTariffs, refreshVehicles, currentZone?.id]);
 
   const handleConfirm = useCallback(async () => {
     if (!selectedTariff) {
@@ -154,9 +181,11 @@ const TariffSelectionScreen: React.FC<TariffSelectionScreenProps> = ({
       return;
     }
 
+ 
+ 
     if (isChangeMode) {
       try {
-        await Promise.all([refreshCurrentShift(), refreshRideHistory(3)]);
+        await Promise.all([refreshCurrentShift(), refreshRecentJobs(3)]);
       } catch (error) {
         console.error("Tariff change refresh error", error);
       }
@@ -165,7 +194,21 @@ const TariffSelectionScreen: React.FC<TariffSelectionScreenProps> = ({
         text1: "Tariff updated",
         text2: `${selectedTariff.name} will be used for upcoming jobs.`,
       });
-      navigation.navigate("Home"); // ✅ FIX: Navigate to Home (will show dashboard or active job)
+      
+      // ✅ Navigate to Home - it will automatically show:
+      // - Dashboard if no active job
+      // - Active job screen if job exists (via HomeScreen's useFocusEffect)
+      navigation.navigate("Home");
+      return;
+    }
+
+    const activeVehicleId = selectedVehicle?.id || vehicleId;
+    if (!activeVehicleId) {
+      Toast.show({
+        type: "info",
+        text1: "Vehicle required",
+        text2: "Select a vehicle before starting your shift.",
+      });
       return;
     }
 
@@ -181,20 +224,36 @@ const TariffSelectionScreen: React.FC<TariffSelectionScreenProps> = ({
               speed: currentLocation.speed,
             }
           : FALLBACK_LOCATION;
-
+    
+       
+      // ✅ Start shift with selected vehicle and tariff
       await startShift({
-        vehicleId,
+        vehicleId: activeVehicleId,
         tariffId: selectedTariff.id,
         location: locationPayload,
       });
+      
+      // ✅ REMOVED: refreshCurrentShift() - startShift already returns and persists the shift
+      // Calling refreshCurrentShift immediately might find old cached shift or get null from server
+      // The HomeScreen will refresh stats after 3 seconds anyway
+      
+      // ✅ Refresh ride history to show latest completed trips
+      await refreshRecentJobs(3);
 
-      await refreshCurrentShift();
-      await refreshRideHistory(3);
-      navigation.navigate("Home");
+      // ✅ Navigate to Home - HomeScreen will automatically:
+      // 1. Show dashboard if no job
+      // 2. Navigate to appropriate job screen if active job exists (via useFocusEffect)
+      try{
+           navigation.navigate("Home");
+      }catch(error){
+        console.error("Navigation error", error);
+        Alert.alert("Navigation Error", error?.message);
+      }
+      
       Toast.show({
         type: "success",
         text1: "Shift started",
-        text2: "You are now online.",
+        text2: "You are now online and ready for jobs.",
       });
     } catch (error) {
       console.error("Failed to start shift", error);
@@ -211,8 +270,9 @@ const TariffSelectionScreen: React.FC<TariffSelectionScreenProps> = ({
     isChangeMode,
     navigation,
     refreshCurrentShift,
-    refreshRideHistory,
+    refreshRecentJobs,
     selectedTariff,
+    selectedVehicle?.id,
     startShift,
     vehicleId,
   ]);
@@ -275,11 +335,13 @@ const TariffSelectionScreen: React.FC<TariffSelectionScreenProps> = ({
         <View style={styles.topRow}>
           <View>
             <Typography variant="titleLarge" color={Colors.text.inverse}>
-              Choose Your Tariff
+              {!selectedVehicle ? "Select Your Vehicle" : "Choose Your Tariff"}
             </Typography>
-            <Text style={styles.subtitle}>
-              Vehicle <Text style={styles.highlight}>{vehicleId}</Text>
-            </Text>
+            {selectedVehicle && (
+              <Text style={styles.subtitle}>
+                Vehicle <Text style={styles.highlight}>{selectedVehicle.licensePlate}</Text>
+              </Text>
+            )}
           </View>
           <TouchableOpacity
             onPress={() => navigation.goBack()}
@@ -291,29 +353,114 @@ const TariffSelectionScreen: React.FC<TariffSelectionScreenProps> = ({
           </TouchableOpacity>
         </View>
 
-        {currentZone ? (
-          <View style={styles.zoneBanner}>
-            <Text style={styles.zoneBannerTitle}>{currentZone.name}</Text>
-            <Text style={styles.zoneBannerSubtitle}>
-              Tariffs tailored for this zone update automatically.
-            </Text>
-          </View>
-        ) : zoneLoading ? (
-          <View style={styles.zoneBannerInactive}>
-            <Text style={styles.zoneBannerSubtitle}>
-              Waiting for location lock to determine your zone.
-            </Text>
-          </View>
-        ) : lastZoneCheckAt ? (
-          <View style={styles.zoneBannerWarning}>
-            <Text style={styles.zoneBannerTitle}>Outside service area</Text>
-            <Text style={styles.zoneBannerSubtitle}>
-              Move into a supported zone to unlock tariffs.
-            </Text>
-          </View>
-        ) : null}
+        {/* Selected Vehicle Header - Show change button */}
+        {selectedVehicle && (
+          <TouchableOpacity 
+            style={styles.selectedVehicleBanner}
+            onPress={async () => {
+              // Clear vehicle selection to show vehicle list again
+              await selectVehicle(null);
+            }}
+            activeOpacity={0.85}
+          >
+            <View style={styles.selectedVehicleInfo}>
+              <MCIcon name="car" size={20} color={Colors.accent.highlight} />
+              <View>
+                <Text style={styles.selectedVehiclePlate}>{selectedVehicle.licensePlate}</Text>
+                <Text style={styles.selectedVehicleDetails}>
+                  {selectedVehicle.make} {selectedVehicle.model}
+                </Text>
+              </View>
+            </View>
+            <View style={styles.changeVehicleButton}>
+              <MCIcon name="swap-horizontal" size={16} color={Colors.accent.highlight} />
+              <Text style={styles.changeVehicleText}>Change</Text>
+            </View>
+          </TouchableOpacity>
+        )}
 
-        {activeSelectionHint ? (
+        {/* Vehicle Selection Section */}
+        {!selectedVehicle && (
+          <>
+            <Text style={styles.sectionTitle}>Available Vehicles</Text>
+            {vehiclesLoading ? (
+              <View style={styles.loaderWrap}>
+                <ActivityIndicator size="large" color={Colors.accent.highlight} />
+                <Text style={styles.loaderText}>Loading vehicles...</Text>
+              </View>
+            ) : vehicles.length > 0 ? (
+              <View style={styles.vehicleListContainer}>
+                {vehicles.map((item, index) => (
+                  <React.Fragment key={item.id}>
+                    <TouchableOpacity
+                      style={styles.vehicleCard}
+                      onPress={async () => {
+                        await selectVehicle(item);
+                        Toast.show({
+                          type: "success",
+                          text1: "Vehicle Selected",
+                          text2: `${item.licensePlate} - ${item.make} ${item.model}`,
+                        });
+                      }}
+                      activeOpacity={0.85}
+                    >
+                      <View style={styles.vehicleHeader}>
+                        <MCIcon name="car" size={24} color={Colors.accent.highlight} />
+                        <View style={styles.vehicleInfo}>
+                          <Text style={styles.vehiclePlate}>{item.licensePlate}</Text>
+                          <Text style={styles.vehicleDetails}>
+                            {item.make} {item.model} - {item.year}
+                          </Text>
+                        </View>
+                        <MCIcon name="chevron-right" size={24} color="#8d95ad" />
+                      </View>
+                    </TouchableOpacity>
+                    {index < vehicles.length - 1 && <View style={styles.separator} />}
+                  </React.Fragment>
+                ))}
+              </View>
+            ) : (
+              <View style={styles.emptyContainer}>
+                <MCIcon name="car-off" size={48} color="#8d95ad" />
+                <Text style={styles.emptyState}>
+                  No vehicles assigned. Contact your fleet manager.
+                </Text>
+              </View>
+            )}
+          </>
+        )}
+
+        {/* Tariff Section Title - Always show */}
+        <Text style={styles.sectionTitle}>Select Tariff</Text>
+
+        {/* Tariff Selection Section - Only show when vehicle is selected */}
+        {selectedVehicle && (
+          <>
+            {currentZone ? (
+              <View style={styles.zoneBanner}>
+                <Text style={styles.zoneBannerTitle}>{currentZone.name}</Text>
+                <Text style={styles.zoneBannerSubtitle}>
+                  Tariffs tailored for this zone update automatically.
+                </Text>
+              </View>
+            ) : zoneLoading ? (
+              <View style={styles.zoneBannerInactive}>
+                <Text style={styles.zoneBannerSubtitle}>
+                  Waiting for location lock to determine your zone.
+                </Text>
+              </View>
+            ) : lastZoneCheckAt ? (
+              <View style={styles.zoneBannerWarning}>
+                <Text style={styles.zoneBannerTitle}>Outside service area</Text>
+                <Text style={styles.zoneBannerSubtitle}>
+                  Move into a supported zone to unlock tariffs.
+                </Text>
+              </View>
+            ) : null}
+          </>
+        )}
+
+        {selectedVehicle && currentZone ? (
           <Text style={styles.selectionHint}>{activeSelectionHint}</Text>
         ) : null}
 
@@ -396,6 +543,7 @@ const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
     backgroundColor: Colors.background.base,
+    paddingTop: 40,
   },
   container: {
     flex: 1,
@@ -527,8 +675,8 @@ const styles = StyleSheet.create({
   },
   tariffCard: {
     backgroundColor: Colors.background.elevated,
-    borderRadius: 18,
-    padding: 18,
+    borderRadius: 12,
+    padding: 12,
     borderWidth: 1,
     borderColor: Colors.accent.border,
   },
@@ -536,8 +684,8 @@ const styles = StyleSheet.create({
     borderColor: Colors.accent.highlight,
     shadowColor: Colors.accent.highlight,
     shadowOpacity: 0.2,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 6 },
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 4 },
   },
   tariffHeader: {
     flexDirection: "row",
@@ -551,36 +699,37 @@ const styles = StyleSheet.create({
   tariffTitle: {
     color: "#dfe3f3",
     fontWeight: "600",
-    fontSize: 16,
+    fontSize: 14,
   },
   tariffTitleSelected: {
     color: Colors.accent.highlight,
   },
   tariffSubtitle: {
     color: "#8d95ad",
-    marginTop: 4,
+    fontSize: 12,
+    marginTop: 2,
   },
   tariffRow: {
     flexDirection: "row",
     justifyContent: "space-between",
-    marginTop: 12,
+    marginTop: 8,
   },
   tariffMetric: {
     color: "#a7b1cb",
-    fontSize: 13,
+    fontSize: 12,
   },
   tariffMeta: {
     color: "#a7b1cb",
-    marginTop: 8,
-    fontSize: 13,
+    marginTop: 6,
+    fontSize: 12,
   },
   featureWrap: {
-    marginTop: 10,
-    gap: 4,
+    marginTop: 6,
+    gap: 2,
   },
   featureText: {
     color: "#8d95ad",
-    fontSize: 13,
+    fontSize: 11,
   },
   badge: {
     backgroundColor: "rgba(245, 180, 0, 0.15)",
@@ -605,6 +754,80 @@ const styles = StyleSheet.create({
     color: Colors.text.inverse,
     fontWeight: "700",
     fontSize: 16,
+  },
+  sectionTitle: {
+    fontSize: 16,
+    fontWeight: "600",
+    color: Colors.text.inverse,
+    marginBottom: 12,
+    marginTop: 20,
+  },
+  vehicleListContainer: {
+    marginBottom: 8,
+  },
+  vehicleCard: {
+    backgroundColor: Colors.background.elevated,
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: Colors.accent.border,
+  },
+  vehicleHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  vehicleInfo: {
+    flex: 1,
+  },
+  vehiclePlate: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: Colors.text.inverse,
+  },
+  vehicleDetails: {
+    fontSize: 13,
+    color: "#8d95ad",
+    marginTop: 4,
+  },
+  selectedVehicleBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    backgroundColor: Colors.background.elevated,
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: Colors.accent.border,
+  },
+  selectedVehicleInfo: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  selectedVehiclePlate: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: Colors.text.inverse,
+  },
+  selectedVehicleDetails: {
+    fontSize: 12,
+    color: "#8d95ad",
+  },
+  changeVehicleButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: "rgba(99, 102, 241, 0.12)",
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+  },
+  changeVehicleText: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: Colors.accent.highlight,
   },
 });
 

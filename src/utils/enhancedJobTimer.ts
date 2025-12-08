@@ -26,10 +26,13 @@
 import { calculateHaversineDistance } from './haversineDistance';
 
 // Configuration constants
-const GPS_NOISE_FILTER_METERS = 10; // Ignore GPS movements below this threshold
-const MIN_MOVING_SPEED_KMH = 5; // ✅ FIX: Increased from 1 to 5 km/h (GPS drift can show 1-3 km/h when stationary)
-const MIN_MOVEMENT_DISTANCE_METERS = 3; // Minimum distance to be considered moving (between GPS updates)
+const GPS_NOISE_FILTER_METERS = 12; // Ignore GPS movements below this threshold to reduce jitter/noise
+const MIN_MOVING_SPEED_KMH = 5; // Vehicle must be moving at least 5 km/h to be considered "moving"
+const MAX_REASONABLE_SPEED_KMH = 200; // Maximum reasonable speed - anything above is GPS glitch
+const MAX_REASONABLE_DISTANCE_PER_SECOND = 55; // ~200 km/h max (55 m/s)
+const GPS_SPEED_TOLERANCE_MULTIPLIER = 1.45; // Allow up to +45% vs raw speed before treating as glitch
 const MOVEMENT_DETECTION_WINDOW_SECONDS = 10; // Time window to average movement detection
+const STABILIZATION_WINDOW_MS = 4000; // Ignore GPS jitter for first few seconds after start
 
 export interface LocationUpdate {
   latitude: number;
@@ -45,6 +48,7 @@ export interface TimerMetrics {
   waiting: number; // Total waiting time in seconds
   elapsed: number; // Total elapsed time in seconds
   isMoving: boolean; // Current movement state
+  speedKmh: number; // Derived speed (km/h) based on coordinates
 }
 
 export interface TimerState {
@@ -58,6 +62,10 @@ export interface TimerState {
     accuracy?: number;
     timestamp?: number;
   } | null;
+  totalPausedMillis?: number;
+  isPaused?: boolean;
+  hasInitialFix?: boolean;
+  hasStabilized?: boolean;
 }
 
 export class EnhancedJobTimer {
@@ -66,8 +74,22 @@ export class EnhancedJobTimer {
   private totalWaitingSeconds: number = 0;
   private totalDistanceMeters: number = 0;
   private lastKnownCoordinate: LocationUpdate | null = null;
+  private totalPausedMillis: number = 0;
+  private pauseStartedAt: number | null = null;
+  private isPaused: boolean = false;
+  private hasInitialFix: boolean = false;
+  private hasStabilized: boolean = false;
   private initializedFromStore: boolean = false;
   private logPrefix: string = '[EnhancedJobTimer]';
+  private lastDerivedSpeedKmh: number = 0;
+  private lastIsMoving: boolean = false;
+  
+  // ✅ NEW: Rolling average for movement detection
+  private recentSpeeds: number[] = [];
+  private readonly MAX_SPEED_SAMPLES = 5; // Keep last 5 speed samples
+  private consecutiveStoppedUpdates: number = 0;
+  private consecutiveMovingUpdates: number = 0;
+  private readonly MOVEMENT_CONFIDENCE_THRESHOLD = 1; // Require only one consistent reading for snappier response
 
   /**
    * Initialize timer from persisted job data
@@ -127,6 +149,74 @@ export class EnhancedJobTimer {
       this.lastUpdateTime = this.startTime;
       console.log(`${this.logPrefix} ⏱️ Timer started at ${new Date(this.startTime).toISOString()}`);
     }
+
+    if (this.isPaused) {
+      this.resume();
+    }
+  }
+
+  /**
+   * Pause the timer so elapsed/price calculations freeze
+   */
+  pause(): void {
+    if (this.isPaused) {
+      return;
+    }
+
+    this.isPaused = true;
+    this.pauseStartedAt = Date.now();
+    console.log(`${this.logPrefix} ⏸️ Timer paused`);
+  }
+
+  /**
+   * Resume the timer after a pause without losing accumulated time/distance
+   */
+  resume(currentLocation?: LocationUpdate | null): TimerMetrics | void {
+    if (!this.isPaused) {
+      return;
+    }
+
+    const now = Date.now();
+    const locationToUse = currentLocation ?? this.lastKnownCoordinate;
+
+    if (!locationToUse) {
+      this.lastUpdateTime = now;
+      this.pauseStartedAt = null;
+      this.isPaused = false;
+      console.log(`${this.logPrefix} ▶️ Timer resumed without location (paused for ${Math.round(this.totalPausedMillis / 1000)}s total)`);
+      return this.getCurrentMetrics(null);
+    }
+
+    if (!this.hasInitialFix) {
+      this.hasInitialFix = true;
+    }
+
+    this.lastKnownCoordinate = {
+      latitude: locationToUse.latitude,
+      longitude: locationToUse.longitude,
+      accuracy: locationToUse.accuracy,
+      speed: locationToUse.speed,
+      heading: locationToUse.heading,
+      timestamp: locationToUse.timestamp || now,
+    };
+
+    if (this.pauseStartedAt) {
+      this.totalPausedMillis += Math.max(0, now - this.pauseStartedAt);
+    }
+
+    this.pauseStartedAt = null;
+    this.isPaused = false;
+    this.lastUpdateTime = now;
+    console.log(`${this.logPrefix} ▶️ Timer resumed (paused for ${Math.round(this.totalPausedMillis / 1000)}s total)`);
+
+    return this.getCurrentMetrics(locationToUse);
+  }
+
+  /**
+   * Check if timer is currently paused
+   */
+  isTimerPaused(): boolean {
+    return this.isPaused;
   }
 
   /**
@@ -137,6 +227,21 @@ export class EnhancedJobTimer {
    * @returns Updated metrics
    */
   update(currentLocation: LocationUpdate | null): TimerMetrics {
+    if (this.isPaused) {
+      if (currentLocation) {
+        this.lastKnownCoordinate = {
+          latitude: currentLocation.latitude,
+          longitude: currentLocation.longitude,
+          accuracy: currentLocation.accuracy,
+          speed: currentLocation.speed,
+          heading: currentLocation.heading,
+          timestamp: currentLocation.timestamp || Date.now(),
+        };
+      }
+
+      return this.getCurrentMetrics(currentLocation);
+    }
+
     const now = Date.now();
 
     // Initialize lastUpdateTime if missing
@@ -144,8 +249,8 @@ export class EnhancedJobTimer {
       this.lastUpdateTime = now;
     }
 
-    // Calculate time difference in whole seconds
-    const timeDiffSeconds = Math.floor((now - this.lastUpdateTime) / 1000);
+    // Calculate time difference (in seconds, fractional precision)
+    const timeDiffSeconds = (now - this.lastUpdateTime) / 1000;
 
     // Defensive: handle negative time diff (clock changes)
     if (timeDiffSeconds < 0) {
@@ -154,12 +259,30 @@ export class EnhancedJobTimer {
       return this.getCurrentMetrics(currentLocation);
     }
 
-    // Skip update if no time has passed
-    if (timeDiffSeconds === 0) {
+    // Skip update if effectively no time has passed
+    if (timeDiffSeconds < 0.05) {
       return this.getCurrentMetrics(currentLocation);
     }
 
+    // If we didn't receive a fresh location, don't treat it as waiting time—just keep last metrics
+    if (!currentLocation) {
+      this.lastUpdateTime = now;
+      return this.getCurrentMetrics(this.lastKnownCoordinate);
+    }
+
     let distanceMovedThisTick = 0;
+
+    const rawSpeedMetersPerSecond =
+      currentLocation && Number.isFinite(Number(currentLocation.speed))
+        ? Math.max(0, Number(currentLocation.speed))
+        : 0;
+
+    const expectedDistanceFromSpeed =
+      rawSpeedMetersPerSecond > 0 ? rawSpeedMetersPerSecond * timeDiffSeconds : 0;
+    const speedAwareDistanceCap =
+      expectedDistanceFromSpeed > 0
+        ? expectedDistanceFromSpeed * GPS_SPEED_TOLERANCE_MULTIPLIER
+        : 0;
 
     // Calculate distance only if we have both coordinates
     if (
@@ -172,14 +295,55 @@ export class EnhancedJobTimer {
         this.lastKnownCoordinate,
         currentLocation
       );
+      
+      // ✅ GPS GLITCH DETECTION: Filter unrealistic jumps but allow speed-backed movement
+      const maxDistanceForTimeDiff = MAX_REASONABLE_DISTANCE_PER_SECOND * timeDiffSeconds;
+      const dynamicDistanceCap =
+        speedAwareDistanceCap > 0
+          ? Math.max(speedAwareDistanceCap, maxDistanceForTimeDiff)
+          : maxDistanceForTimeDiff;
+
+      if (distanceMovedThisTick > dynamicDistanceCap) {
+        if (speedAwareDistanceCap > 0) {
+          console.warn(
+            `${this.logPrefix} ⚠️ GPS jump ${distanceMovedThisTick.toFixed(0)}m in ${timeDiffSeconds}s ` +
+              `(speed-expected ≈ ${expectedDistanceFromSpeed.toFixed(0)}m) - clamping to ${dynamicDistanceCap.toFixed(0)}m`
+          );
+          distanceMovedThisTick = dynamicDistanceCap;
+        } else {
+          console.warn(
+            `${this.logPrefix} 🚨 GPS GLITCH DETECTED: ${distanceMovedThisTick.toFixed(0)}m in ${timeDiffSeconds}s ` +
+              `(max reasonable: ${dynamicDistanceCap.toFixed(0)}m) - IGNORING THIS UPDATE`
+          );
+          // Treat this as if vehicle didn't move (GPS glitch)
+          distanceMovedThisTick = 0;
+        }
+      }
     }
 
     // ✅ SMARTER MOVEMENT DETECTION: Calculate from GPS coordinates
+    const derivedSpeedKmh =
+      timeDiffSeconds > 0 && distanceMovedThisTick > 0
+        ? Math.min(
+            Math.max((distanceMovedThisTick / timeDiffSeconds) * 3.6, 0),
+            MAX_REASONABLE_SPEED_KMH
+          )
+        : 0;
+    const gpsSpeedKmh = this.getGpsSpeedKmh(currentLocation);
+    const effectiveSpeedKmh = derivedSpeedKmh > 0 ? derivedSpeedKmh : gpsSpeedKmh;
+
     const isMoving = this.isVehicleMoving(
       currentLocation, 
       distanceMovedThisTick, 
-      timeDiffSeconds
+      timeDiffSeconds,
+      effectiveSpeedKmh,
+      gpsSpeedKmh
     );
+    this.lastIsMoving = isMoving;
+
+    if (!this.hasStabilized && this.startTime) {
+      this.hasStabilized = now - this.startTime >= STABILIZATION_WINDOW_MS;
+    }
 
     // 🔍 DEBUG: Log movement detection details
     console.log(
@@ -207,7 +371,7 @@ export class EnhancedJobTimer {
         );
       }
       // Don't add waiting time when moving
-    } else {
+    } else if (this.hasStabilized) {
       // Add waiting time when not moving
       this.totalWaitingSeconds += timeDiffSeconds;
       
@@ -219,6 +383,8 @@ export class EnhancedJobTimer {
         `${this.logPrefix} ⏱️ WAITING TIME ADDED: +${timeDiffSeconds.toFixed(1)}s (total: ${this.totalWaitingSeconds.toFixed(0)}s, ${speedInfo}, moved: ${distanceMovedThisTick.toFixed(2)}m)`
       );
     }
+
+    this.lastDerivedSpeedKmh = isMoving ? derivedSpeedKmh : 0;
 
     // Update last update time for next cycle
     this.lastUpdateTime = now;
@@ -252,46 +418,83 @@ export class EnhancedJobTimer {
   private isVehicleMoving(
     location: LocationUpdate | null, 
     distanceMoved: number = 0, 
-    timeDiff: number = 0
+    timeDiff: number = 0,
+    derivedSpeedKmh: number = 0,
+    gpsSpeedKmh: number = 0
   ): boolean {
-    // ✅ PRIORITY 1: Coordinate-based detection (MOST ACCURATE!)
-    // If we have both time diff and distance data, use it
+    // ✅ PRIORITY 1: Coordinate-based detection with rolling average (MOST ACCURATE!)
     if (timeDiff > 0) {
-      // If vehicle moved less than 3 meters, it's DEFINITELY stopped
-      if (distanceMoved < MIN_MOVEMENT_DISTANCE_METERS) {
-        // Log when stopped (for debugging waiting time)
-        if (Math.random() < 0.05) { // 5% sample to avoid spam
-          console.log(
-            `${this.logPrefix} 🛑 STOPPED: moved only ${distanceMoved.toFixed(2)}m in ${timeDiff.toFixed(1)}s (< ${MIN_MOVEMENT_DISTANCE_METERS}m threshold)`
-          );
-        }
-        return false; // ✅ STOPPED
+      const sanitizedSpeedKmh =
+        Number.isFinite(derivedSpeedKmh) && derivedSpeedKmh > 0
+          ? Math.max(derivedSpeedKmh, 0)
+          : Math.max(gpsSpeedKmh, 0);
+      
+      // Add to rolling average
+      this.recentSpeeds.push(sanitizedSpeedKmh);
+      if (this.recentSpeeds.length > this.MAX_SPEED_SAMPLES) {
+        this.recentSpeeds.shift();
       }
       
-      // Moved >= 3 meters, calculate speed
-      const calculatedSpeedKmh = (distanceMoved / timeDiff) * 3.6;
+      // Calculate average speed
+      const avgSpeed = this.recentSpeeds.reduce((a, b) => a + b, 0) / this.recentSpeeds.length;
       
-      // Vehicle is moving if calculated speed is above 5 km/h
-      const isMovingByCoordinates = calculatedSpeedKmh >= MIN_MOVING_SPEED_KMH;
+      // Determine if moving based on average speed
+      const isCurrentlyMoving = avgSpeed >= MIN_MOVING_SPEED_KMH;
       
-      // Log movement detection (sampled to avoid spam)
+      // Track consecutive readings for stability
+      if (isCurrentlyMoving) {
+        this.consecutiveMovingUpdates++;
+        this.consecutiveStoppedUpdates = 0;
+      } else {
+        this.consecutiveStoppedUpdates++;
+        this.consecutiveMovingUpdates = 0;
+      }
+      
+      // Require consistent readings before changing state
+      const isConfidentlyMoving = this.consecutiveMovingUpdates >= this.MOVEMENT_CONFIDENCE_THRESHOLD;
+      const isConfidentlyStopped = this.consecutiveStoppedUpdates >= this.MOVEMENT_CONFIDENCE_THRESHOLD;
+      
+      // If vehicle moved less than MIN_MOVEMENT_DISTANCE_METERS, it's definitely stopped
+      if (distanceMoved < GPS_NOISE_FILTER_METERS) {
+        const effectiveSpeed = Math.max(avgSpeed, gpsSpeedKmh);
+        if (effectiveSpeed >= MIN_MOVING_SPEED_KMH) {
+          this.consecutiveMovingUpdates++;
+          this.consecutiveStoppedUpdates = 0;
+          return true;
+        }
+        if (Math.random() < 0.05) {
+          console.log(
+            `${this.logPrefix} 🛑 STOPPED: moved only ${distanceMoved.toFixed(2)}m in ${timeDiff.toFixed(1)}s`
+          );
+        }
+        this.consecutiveStoppedUpdates++;
+        this.consecutiveMovingUpdates = 0;
+        return false;
+      }
+      
+      // Log movement detection (sampled)
       if (Math.random() < 0.05) {
         console.log(
-          `${this.logPrefix} ${isMovingByCoordinates ? '🚗 MOVING' : '🛑 STOPPED'}: ${distanceMoved.toFixed(1)}m in ${timeDiff.toFixed(1)}s = ${calculatedSpeedKmh.toFixed(1)} km/h`
+          `${this.logPrefix} ${isConfidentlyMoving ? '🚗 MOVING' : '🛑 STOPPED'}: ` +
+          `avg speed ${avgSpeed.toFixed(1)} km/h ` +
+          `(${this.consecutiveMovingUpdates} moving / ${this.consecutiveStoppedUpdates} stopped readings)`
         );
       }
       
-      return isMovingByCoordinates;
+      // Use confident state, or fall back to current reading
+      if (isConfidentlyMoving) return true;
+      if (isConfidentlyStopped) return false;
+      return isCurrentlyMoving;
     }
 
-    // ✅ PRIORITY 2: Fallback to GPS-provided speed (less reliable due to drift)
+    // ✅ PRIORITY 2: Fallback to GPS-provided speed (less reliable)
     if (location && location.speed !== undefined && location.speed !== null) {
-      const isMovingBySpeed = location.speed >= MIN_MOVING_SPEED_KMH;
+      const gpsSpeed = this.getGpsSpeedKmh(location);
+      const isMovingBySpeed = gpsSpeed >= MIN_MOVING_SPEED_KMH;
       
-      // Log speed-based detection (sampled)
       if (!isMovingBySpeed && Math.random() < 0.05) {
         console.log(
-          `${this.logPrefix} 🛑 STOPPED (by GPS speed): ${location.speed.toFixed(1)} km/h < ${MIN_MOVING_SPEED_KMH} km/h`
+          `${this.logPrefix} 🛑 STOPPED (by GPS speed): ${location.speed.toFixed(1)} km/h`
         );
       }
       
@@ -310,15 +513,44 @@ export class EnhancedJobTimer {
    */
   private getCurrentMetrics(currentLocation: LocationUpdate | null): TimerMetrics {
     const now = Date.now();
-    const elapsed = this.startTime ? (now - this.startTime) / 1000 : 0;
-    const isMoving = this.isVehicleMoving(currentLocation);
+    let elapsedMs = 0;
+    if (this.startTime && this.lastUpdateTime) {
+      elapsedMs = Math.max(0, this.lastUpdateTime - this.startTime);
+    } else if (this.startTime) {
+      elapsedMs = Math.max(0, now - this.startTime);
+    }
+
+    const adjustedElapsedMs = Math.max(0, elapsedMs - this.totalPausedMillis);
+    const elapsed = adjustedElapsedMs / 1000;
+    
+    const isMoving =
+      this.lastUpdateTime !== null
+        ? this.lastIsMoving
+        : this.isVehicleMoving(currentLocation);
+
+    // ✅ VALIDATION: Waiting time should NEVER exceed elapsed time
+    const validWaitingTime = Math.min(this.totalWaitingSeconds || 0, elapsed);
+    if (this.totalWaitingSeconds > elapsed) {
+      console.warn(
+        `${this.logPrefix} ⚠️ WAITING TIME EXCEEDED ELAPSED TIME! ` +
+        `Waiting: ${this.totalWaitingSeconds.toFixed(0)}s, Elapsed: ${elapsed.toFixed(0)}s - Correcting to ${validWaitingTime.toFixed(0)}s`
+      );
+    }
 
     return {
       distance: this.totalDistanceMeters || 0,
-      waiting: this.totalWaitingSeconds || 0,
+      waiting: validWaitingTime,
       elapsed: elapsed || 0,
       isMoving,
+      speedKmh: this.lastDerivedSpeedKmh || 0,
     };
+  }
+
+  /**
+   * Snapshot current metrics without mutating timer state.
+   */
+  snapshot(): TimerMetrics {
+    return this.getCurrentMetrics(this.lastKnownCoordinate);
   }
 
   /**
@@ -332,7 +564,18 @@ export class EnhancedJobTimer {
     this.totalWaitingSeconds = 0;
     this.totalDistanceMeters = 0;
     this.lastKnownCoordinate = null;
+    this.totalPausedMillis = 0;
+    this.pauseStartedAt = null;
+    this.isPaused = false;
+    this.hasInitialFix = false;
+    this.hasStabilized = false;
     this.initializedFromStore = false;
+    this.lastIsMoving = false;
+    
+    // ✅ NEW: Clear rolling average state
+    this.recentSpeeds = [];
+    this.consecutiveStoppedUpdates = 0;
+    this.consecutiveMovingUpdates = 0;
   }
 
   /**
@@ -346,6 +589,10 @@ export class EnhancedJobTimer {
       totalWaitingSeconds: this.totalWaitingSeconds,
       totalDistanceMeters: this.totalDistanceMeters,
       lastKnownCoordinate: this.lastKnownCoordinate,
+      totalPausedMillis: this.totalPausedMillis,
+      isPaused: this.isPaused,
+      hasInitialFix: this.hasInitialFix,
+      hasStabilized: this.hasStabilized,
     };
   }
 
@@ -359,7 +606,13 @@ export class EnhancedJobTimer {
     this.totalWaitingSeconds = state.totalWaitingSeconds || 0;
     this.totalDistanceMeters = state.totalDistanceMeters || 0;
     this.lastKnownCoordinate = state.lastKnownCoordinate;
+    this.totalPausedMillis = state.totalPausedMillis || 0;
+    this.pauseStartedAt = null;
+    this.isPaused = !!state.isPaused;
+    this.hasInitialFix = !!state.hasInitialFix;
+    this.hasStabilized = !!state.hasStabilized;
     this.initializedFromStore = true;
+    this.lastIsMoving = false;
 
     console.log(`${this.logPrefix} ✅ State restored from persistence`);
   }
@@ -396,8 +649,21 @@ export class EnhancedJobTimer {
   isInitialized(): boolean {
     return this.initializedFromStore || this.startTime !== null;
   }
+
+  private getGpsSpeedKmh(location: LocationUpdate | null): number {
+    if (!location || location.speed === undefined || location.speed === null) {
+      return 0;
+    }
+
+    const rawSpeed = Number(location.speed);
+    if (!Number.isFinite(rawSpeed)) {
+      return 0;
+    }
+
+    // React Native's Location speed is in meters/second
+    return Math.max(0, rawSpeed * 3.6);
+  }
 }
 
 // Export a singleton instance for global use
 export const globalJobTimer = new EnhancedJobTimer();
-

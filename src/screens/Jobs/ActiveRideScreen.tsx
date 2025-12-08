@@ -12,28 +12,47 @@
  * - Real-time pricing breakdown
  */
 
-import { useNavigation } from '@react-navigation/native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Animated,
-  Dimensions,
-  Modal,
-  Platform,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View,
+    ActivityIndicator,
+    Animated,
+    AppState,
+    AppStateStatus,
+    Dimensions,
+    Modal,
+    Platform,
+    ScrollView,
+    StyleSheet,
+    Text,
+    TouchableOpacity,
+    View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Toast from 'react-native-toast-message';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
+// @ts-ignore - No type definitions available
+import KeepAwake from 'react-native-keep-awake';
 import RideMap from '../../components/RideMap';
+import NearbyJobsQueue from '../../components/jobs/NearbyJobsQueue';
+import { useAuth } from '../../context/AuthContext';
 import { useJob } from '../../context/JobContext';
 import { useLocation } from '../../context/LocationContext';
 import { useShift } from '../../context/ShiftContext';
+import { fetchCompanySettings, MapProvider } from '../../services/companySettingsService';
+import { openExternalNavigation } from '../../utils/navigationHelper';
+import { getWaitingRatePerMinute } from '../../utils/tariffUtils';
+import { normalizeMapProvider } from '../Home/utils/homeScreenUtils';
 
 const { width, height } = Dimensions.get('window');
+const SMART_WAIT_DISTANCE_METERS = 8;
+const SMART_WAIT_SPEED_KMH = 6;
+const SMART_WAIT_DURATION_MS = 3000;
+
+const toSafeNumber = (value: unknown): number | undefined => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+};
 
 interface ActiveRideScreenProps {}
 
@@ -43,16 +62,22 @@ const ActiveRideScreen: React.FC<ActiveRideScreenProps> = () => {
     currentJob, 
     status, 
     timer, 
-    routePoints,
     pricingBreakdown,
+    routePoints,
     pauseJob,
     resumeJob,
+    resumePendingPayment,
     prepareJobForPayment, // ✅ Use prepare instead of complete
     changeTariff, // ✅ NEW: For changing tariff mid-ride
   } = useJob();
   
   const { location } = useLocation();
   const { selectedTariff, tariffs: driverTariffs } = useShift(); // ✅ FIX: Use 'tariffs' from ShiftContext
+  const { driver } = useAuth();
+
+  const [mapProvider, setMapProvider] = useState<MapProvider>('NATIVE');
+  const [mapProviderLoading, setMapProviderLoading] = useState(false);
+  const [locationUpdateInterval, setLocationUpdateInterval] = useState<number>(5);
   
   // Animation for pulsing meter
   const pulseAnim = useRef(new Animated.Value(1)).current;
@@ -67,20 +92,102 @@ const ActiveRideScreen: React.FC<ActiveRideScreenProps> = () => {
     method: string;
     distanceMoved: number;
     lastUpdate: number;
+    stationaryDurationMs: number;
+    waitingReady: boolean;
   }>({
     isMoving: false,
     speed: 0,
     method: 'unknown',
     distanceMoved: 0,
     lastUpdate: Date.now(),
+    stationaryDurationMs: 0,
+    waitingReady: false,
   });
   
-  // ✅ NEW: Local waiting time counter (for real-time display and debugging)
-  const [localWaitingSeconds, setLocalWaitingSeconds] = useState(0);
-  const waitingIntervalRef = useRef<NodeJS.Timeout | null>(null);
-  
+  const [displayElapsedSeconds, setDisplayElapsedSeconds] = useState(timer?.elapsedSeconds || 0);
+  const elapsedBaseRef = useRef(timer?.elapsedSeconds || 0);
+  const elapsedSyncRef = useRef(Date.now());
+
   // ✅ NEW: Tariff change modal
   const [showTariffModal, setShowTariffModal] = useState(false);
+  const [showMapModal, setShowMapModal] = useState(false);
+  const activeTariff = useMemo(() => {
+    const jobTariff = (currentJob as any)?.tariff;
+    if (selectedTariff && jobTariff) {
+      return {
+        ...jobTariff,
+        ...selectedTariff,
+        baseFare: toSafeNumber(selectedTariff.baseFare) ?? toSafeNumber(jobTariff.baseFare) ?? 0,
+        perKmRate: toSafeNumber(selectedTariff.perKmRate) ?? toSafeNumber(jobTariff.perKmRate) ?? 0,
+        perMinuteRate: toSafeNumber(selectedTariff.perMinuteRate) ?? toSafeNumber(jobTariff.perMinuteRate) ?? 0,
+        minimumFare: toSafeNumber(selectedTariff.minimumFare) ?? toSafeNumber(jobTariff.minimumFare) ?? 0,
+      };
+    }
+    return selectedTariff || jobTariff || null;
+  }, [selectedTariff, currentJob]);
+  const resolvedBaseFare = useMemo(() => {
+    const jobTariffBase = toSafeNumber((currentJob as any)?.tariff?.baseFare);
+    const tariffBase = toSafeNumber(activeTariff?.baseFare) ?? jobTariffBase;
+    const breakdownBase = pricingBreakdown
+      ? toSafeNumber(pricingBreakdown.startingPrice)
+      : undefined;
+
+    if (typeof breakdownBase === 'number' && breakdownBase > 0) {
+      return breakdownBase;
+    }
+
+    if (typeof tariffBase === 'number' && tariffBase > 0) {
+      return tariffBase;
+    }
+
+    return tariffBase ?? breakdownBase ?? 0;
+  }, [activeTariff, currentJob, pricingBreakdown]);
+
+  useFocusEffect(
+    useCallback(() => {
+      if (status === 'PENDING_PAYMENT') {
+        resumePendingPayment();
+      }
+    }, [status, resumePendingPayment])
+  );
+
+  // ✅ Company map settings (free-tier map alignment)
+  useEffect(() => {
+    if (!driver?.companyId) {
+      return;
+    }
+
+    let cancelled = false;
+
+    const loadSettings = async () => {
+      setMapProviderLoading(true);
+      try {
+        const response = await fetchCompanySettings(driver.companyId);
+        if (cancelled) {
+          return;
+        }
+        const provider = normalizeMapProvider(response?.settings?.mapProvider || undefined);
+        const interval = response?.settings?.locationUpdateInterval || 5;
+        setMapProvider(provider);
+        setLocationUpdateInterval(interval);
+      } catch (error) {
+        if (!cancelled) {
+          console.error('Failed to load company map settings for ActiveRide:', error);
+          setMapProvider('NATIVE');
+        }
+      } finally {
+        if (!cancelled) {
+          setMapProviderLoading(false);
+        }
+      }
+    };
+
+    loadSettings();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [driver?.companyId]);
   
   // 🔍 DEBUG: Log tariffs when modal opens
   useEffect(() => {
@@ -117,27 +224,32 @@ const ActiveRideScreen: React.FC<ActiveRideScreenProps> = () => {
     ).start();
   }, []);
   
-  useEffect(() => {
-    if (location?.speedKmh) {
-      setCurrentSpeed(location.speedKmh);
-    }
-  }, [location?.speedKmh]);
-  
   // ✅ NEW: Track real-time movement status for debugging waiting time
   const lastLocationRef = useRef<any>(null);
+  const stationarySinceRef = useRef<number | null>(null);
   
   useEffect(() => {
     if (!location) {
+      stationarySinceRef.current = null;
+      setCurrentSpeed(0);
       setMovementStatus(prev => ({
         ...prev,
+        isMoving: false,
+        speed: 0,
         method: 'no location',
+        distanceMoved: 0,
+        stationaryDurationMs: 0,
+        waitingReady: false,
         lastUpdate: Date.now(),
       }));
       return;
     }
     
+    const currentTimestamp = location.timestamp ?? Date.now();
+    
     // Calculate distance from last location
     let distanceMoved = 0;
+    let timeDeltaSeconds = 0;
     if (lastLocationRef.current) {
       const R = 6371000; // Earth's radius in meters
       const dLat = (location.latitude - lastLocationRef.current.latitude) * Math.PI / 180;
@@ -149,84 +261,94 @@ const ActiveRideScreen: React.FC<ActiveRideScreenProps> = () => {
         Math.sin(dLon/2) * Math.sin(dLon/2);
       const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
       distanceMoved = R * c; // Distance in meters
+
+      const prevTimestamp = lastLocationRef.current.timestamp ?? currentTimestamp;
+      timeDeltaSeconds = Math.max((currentTimestamp - prevTimestamp) / 1000, 0.5);
     }
     
-    // Determine if moving based on distance (< 3m = stopped)
-    const isMovingByDistance = distanceMoved >= 3;
+    let derivedSpeedKmh =
+      distanceMoved > 0 && timeDeltaSeconds > 0
+        ? Math.min((distanceMoved / timeDeltaSeconds) * 3.6, 200)
+        : 0;
+
+    if (!derivedSpeedKmh && typeof location.speed === 'number') {
+      derivedSpeedKmh = Math.max(location.speed * 3.6, 0);
+    }
     
-    // Determine if moving based on speed (< 5 km/h = stopped)
-    const speed = location.speed || location.speedKmh || 0;
-    const isMovingBySpeed = speed >= 5;
+    const isMovingByDistance = distanceMoved >= SMART_WAIT_DISTANCE_METERS;
+    const isMovingBySpeed = derivedSpeedKmh >= SMART_WAIT_SPEED_KMH;
     
-    // Use coordinate-based detection as primary method
+    // Use coordinate-based detection as primary method whenever possible
     const isMoving = lastLocationRef.current ? isMovingByDistance : isMovingBySpeed;
     const method = lastLocationRef.current 
-      ? `coords (${distanceMoved.toFixed(1)}m)` 
-      : `gps speed (${speed.toFixed(1)} km/h)`;
+      ? `coords (${distanceMoved.toFixed(1)}m)`
+      : `speed (${derivedSpeedKmh.toFixed(1)} km/h)`;
+
+    if (!isMoving) {
+      if (!stationarySinceRef.current) {
+        stationarySinceRef.current = Date.now();
+      }
+    } else {
+      stationarySinceRef.current = null;
+    }
+
+    const stationaryDurationMs = stationarySinceRef.current
+      ? Date.now() - stationarySinceRef.current
+      : 0;
+    const waitingReady = stationaryDurationMs >= SMART_WAIT_DURATION_MS;
     
+    setCurrentSpeed(derivedSpeedKmh);
     setMovementStatus({
       isMoving,
-      speed,
+      speed: derivedSpeedKmh,
       method,
       distanceMoved,
       lastUpdate: Date.now(),
+      stationaryDurationMs,
+      waitingReady,
     });
     
     // Store current location for next comparison
-    lastLocationRef.current = location;
-  }, [location?.latitude, location?.longitude, location?.speed, location?.speedKmh]);
+    lastLocationRef.current = {
+      ...location,
+      timestamp: currentTimestamp,
+    };
+  }, [location?.latitude, location?.longitude, location?.timestamp, location?.speed]);
   
-  // ✅ NEW: Start/stop waiting time counter based on movement status
+  const isJobRunning = status === 'STARTED' || status === 'ACTIVE';
+
   useEffect(() => {
-    // Clear any existing interval
-    if (waitingIntervalRef.current) {
-      clearInterval(waitingIntervalRef.current);
-      waitingIntervalRef.current = null;
+    elapsedBaseRef.current = Math.max(0, timer?.elapsedSeconds || 0);
+    elapsedSyncRef.current = Date.now();
+    setDisplayElapsedSeconds(Math.max(0, Math.round(elapsedBaseRef.current)));
+  }, [timer?.elapsedSeconds]);
+
+  useEffect(() => {
+    if (!isJobRunning) {
+      elapsedBaseRef.current = Math.max(0, timer?.elapsedSeconds || 0);
+      elapsedSyncRef.current = Date.now();
+      setDisplayElapsedSeconds(Math.max(0, Math.round(elapsedBaseRef.current)));
+      return;
     }
-    
-    // If stopped and job is active, start counting waiting time
-    if (!movementStatus.isMoving && (status === 'STARTED' || status === 'ACTIVE')) {
-      console.log('🛑 Vehicle STOPPED - Starting waiting time counter');
-      
-      waitingIntervalRef.current = setInterval(() => {
-        setLocalWaitingSeconds(prev => {
-          const newValue = prev + 1;
-          console.log(`⏱️ Waiting time: ${newValue}s`);
-          return newValue;
-        });
-      }, 1000); // Increment every second
-    } else if (movementStatus.isMoving) {
-      console.log('🚗 Vehicle MOVING - Stopping waiting time counter');
-      // Don't reset, just stop incrementing
-    }
-    
-    // Cleanup on unmount
-    return () => {
-      if (waitingIntervalRef.current) {
-        clearInterval(waitingIntervalRef.current);
-        waitingIntervalRef.current = null;
+
+    const interval = setInterval(() => {
+      const deltaSeconds = Math.floor((Date.now() - elapsedSyncRef.current) / 1000);
+      setDisplayElapsedSeconds(elapsedBaseRef.current + Math.max(deltaSeconds, 0));
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [isJobRunning, timer?.elapsedSeconds]);
+
+  useEffect(() => {
+    const handleAppStateChange = (nextState: AppStateStatus) => {
+      if (nextState === 'active') {
+        elapsedSyncRef.current = Date.now();
+        setDisplayElapsedSeconds(Math.max(0, Math.round(elapsedBaseRef.current)));
       }
     };
-  }, [movementStatus.isMoving, status]);
-  
-  // Reset local waiting time when job status changes to STARTED
-  useEffect(() => {
-    if (status === 'STARTED') {
-      setLocalWaitingSeconds(0);
-      console.log('🔄 Job started - Reset local waiting time to 0');
-    }
-  }, [status]);
-  
-  // ✅ FIX: Don't auto-navigate away - let HomeScreen handle navigation based on status
-  // This was causing glitches when status changed to PENDING_PAYMENT
-  // HomeScreen's useEffect will navigate to the correct screen based on job status
-  /*
-  useEffect(() => {
-    if (!currentJob || !['STARTED', 'ACTIVE', 'PAUSED'].includes(status)) {
-      navigation.goBack();
-    }
-  }, [currentJob, status, navigation]);
-  */
+    const subscription = AppState.addEventListener('change', handleAppStateChange);
+    return () => subscription.remove();
+  }, []);
   
   // Calculate coordinates
   const pickupCoord = useMemo(() => {
@@ -251,26 +373,46 @@ const ActiveRideScreen: React.FC<ActiveRideScreenProps> = () => {
   
   const driverCoord = useMemo(() => {
     if (location?.latitude && location?.longitude) {
+      const derivedSpeedMs =
+        Number.isFinite(currentSpeed) && currentSpeed > 0
+          ? currentSpeed / 3.6
+          : location.speed || 0;
       return {
         latitude: location.latitude,
         longitude: location.longitude,
-        heading: location.heading || 0, // ✅ Add heading for map rotation
-        speed: location.speed || 0,     // ✅ Add speed for dynamic camera
+        heading: location.heading || 0,
+        speed: derivedSpeedMs,
       };
     }
     return undefined;
-  }, [location]);
+  }, [location?.latitude, location?.longitude, location?.heading, location?.speed, currentSpeed]);
   
   const routeCoordinates = useMemo(
     () => routePoints.map(({ latitude, longitude }) => ({ latitude, longitude })),
     [routePoints]
   );
+
+  const derivedWaitingSeconds = useMemo(() => {
+    const waiting = Math.min(timer?.waitingSeconds || 0, displayElapsedSeconds);
+    return Math.max(0, Math.round(waiting));
+  }, [timer?.waitingSeconds, displayElapsedSeconds]);
+
+  const mapAnimationInterval = useMemo(
+    () => Math.max(locationUpdateInterval, 1) * 1000,
+    [locationUpdateInterval]
+  );
+
+  const waitingRate = useMemo(
+    () => getWaitingRatePerMinute(activeTariff || undefined),
+    [activeTariff]
+  );
   
   // Format time
   const formatTime = (seconds: number) => {
-    const hrs = Math.floor(seconds / 3600);
-    const mins = Math.floor((seconds % 3600) / 60);
-    const secs = seconds % 60;
+    const safeSeconds = Math.max(0, Math.floor(seconds));
+    const hrs = Math.floor(safeSeconds / 3600);
+    const mins = Math.floor((safeSeconds % 3600) / 60);
+    const secs = safeSeconds % 60;
     
     if (hrs > 0) {
       return `${hrs}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
@@ -278,61 +420,63 @@ const ActiveRideScreen: React.FC<ActiveRideScreenProps> = () => {
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
   
+  const manualFareComponents = useMemo(() => {
+    const elapsedSec = Math.max(0, Math.round(displayElapsedSeconds));
+    const waitingSec = derivedWaitingSeconds;
+
+    const base = typeof resolvedBaseFare === 'number' ? resolvedBaseFare : 0;
+    const perKmRate = Number(activeTariff?.perKmRate) || 0;
+    const perMinuteRate = Number(activeTariff?.perMinuteRate) || 0;
+    const distance = ((timer?.distanceMeters || 0) / 1000) * perKmRate;
+    const time = (elapsedSec / 60) * perMinuteRate;
+    const waiting = (waitingSec / 60) * waitingRate;
+    const total = base + distance + time + waiting;
+
+    return {
+      base,
+      distance: Number.isFinite(distance) ? distance : 0,
+      time: Number.isFinite(time) ? time : 0,
+      waiting: Number.isFinite(waiting) ? waiting : 0,
+      total: Number.isFinite(total) ? total : 0,
+    };
+  }, [
+    resolvedBaseFare,
+    activeTariff,
+    timer?.distanceMeters,
+    waitingRate,
+    displayElapsedSeconds,
+    derivedWaitingSeconds,
+  ]);
+
   // Get fare from pricing breakdown or calculate manually
   const currentFare = useMemo(() => {
     if (pricingBreakdown) {
-      const fareFromBreakdown = parseFloat(pricingBreakdown.totalCost || '0');
-      console.log('💰 CurrentFare (from pricingBreakdown):', fareFromBreakdown);
-      return fareFromBreakdown;
-    }
-    
-    // Fallback calculation
-    const base = selectedTariff?.baseFare || 0;
-    const distanceCost = ((timer?.distanceMeters || 0) / 1000) * (selectedTariff?.perKmRate || 0);
-    const timeCost = ((timer?.elapsedSeconds || 0) / 60) * (selectedTariff?.perMinuteRate || 0);
-    const waitingCost = ((localWaitingSeconds / 60) * (selectedTariff?.waitingTimeRate || 0)); // ✅ Use local waiting time
-    const total = base + distanceCost + timeCost + waitingCost;
-    
-    console.log('💰 CurrentFare (calculated):', {
-      base,
-      distanceCost,
-      timeCost,
-      waitingCost,
-      total,
-      timer: {
-        distanceMeters: timer?.distanceMeters,
-        elapsedSeconds: timer?.elapsedSeconds,
-        localWaitingSeconds: localWaitingSeconds, // ✅ Show local waiting time
-      },
-      tariff: {
-        baseFare: selectedTariff?.baseFare,
-        perKmRate: selectedTariff?.perKmRate,
-        perMinuteRate: selectedTariff?.perMinuteRate,
-        waitingTimeRate: selectedTariff?.waitingTimeRate,
+      const fareFromBreakdown = Number.parseFloat(pricingBreakdown.totalCost || '0');
+      if (Number.isFinite(fareFromBreakdown) && fareFromBreakdown > 0) {
+        return fareFromBreakdown;
       }
-    });
-    
-    return total;
-  }, [pricingBreakdown, timer, selectedTariff, localWaitingSeconds]);
+    }
+
+    return manualFareComponents.total;
+  }, [pricingBreakdown, manualFareComponents]);
   
   // Fare breakdown
   const fareDetails = useMemo(() => {
     if (pricingBreakdown) {
+      const distance = Number.parseFloat(pricingBreakdown.distanceCost || '0');
+      const time = Number.parseFloat(pricingBreakdown.durationCost || '0');
+      const waiting = Number.parseFloat(pricingBreakdown.waitingCost || '0');
+      
       return {
-        base: parseFloat(pricingBreakdown.startingPrice || '0'),
-        distance: parseFloat(pricingBreakdown.distanceCost || '0'),
-        time: parseFloat(pricingBreakdown.durationCost || '0'),
-        waiting: parseFloat(pricingBreakdown.waitingCost || '0'),
+        base: manualFareComponents.base,
+        distance: Number.isFinite(distance) ? distance : manualFareComponents.distance,
+        time: Number.isFinite(time) ? time : manualFareComponents.time,
+        waiting: Number.isFinite(waiting) ? waiting : manualFareComponents.waiting,
       };
     }
     
-    return {
-      base: selectedTariff?.baseFare || 0,
-      distance: ((timer?.distanceMeters || 0) / 1000) * (selectedTariff?.perKmRate || 0),
-      time: ((timer?.elapsedSeconds || 0) / 60) * (selectedTariff?.perMinuteRate || 0),
-      waiting: ((localWaitingSeconds / 60) * (selectedTariff?.waitingTimeRate || 0)), // ✅ Use local waiting time
-    };
-  }, [pricingBreakdown, timer, selectedTariff]);
+    return manualFareComponents;
+  }, [pricingBreakdown, manualFareComponents]);
   
   // Handlers
   const handlePause = useCallback(async () => {
@@ -345,6 +489,7 @@ const ActiveRideScreen: React.FC<ActiveRideScreenProps> = () => {
         text2: 'Waiting time will be tracked',
       });
     } catch (error) {
+      console.error('Failed to pause job:', error);
       Toast.show({
         type: 'error',
         text1: 'Failed to Pause',
@@ -359,7 +504,7 @@ const ActiveRideScreen: React.FC<ActiveRideScreenProps> = () => {
       console.log('💰 COMPLETING JOB - PAYMENT FLOW START');
       console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
       console.log('📊 Current State:', {
-        currentFare: currentFare.toFixed(2),
+        currentFare: (Number(currentFare) || 0).toFixed(2),
         timerEarnings: timer?.earningsSoFar?.toFixed(2) || 'undefined',
         timerDistance: timer?.distanceMeters?.toFixed(2) || 'undefined',
         timerWaiting: timer?.waitingSeconds?.toFixed(0) || 'undefined',
@@ -429,13 +574,15 @@ const ActiveRideScreen: React.FC<ActiveRideScreenProps> = () => {
         position: 'top',
       });
       
+      const newWaitingRate = getWaitingRatePerMinute(newTariff);
+
       console.log('✅ Tariff changed successfully:', {
         from: selectedTariff?.name,
         to: newTariff.name,
         newRates: {
           perKm: newTariff.perKmRate,
           perMin: newTariff.perMinuteRate,
-          waiting: newTariff.waitingTimeRate,
+          waiting: newWaitingRate,
         },
       });
     } catch (error) {
@@ -450,73 +597,71 @@ const ActiveRideScreen: React.FC<ActiveRideScreenProps> = () => {
   }, [changeTariff, selectedTariff]);
   
   const handleNavigation = useCallback(() => {
-    if (dropoffCoord) {
-      // Open external navigation apps
-      const url = Platform.select({
-        ios: `maps://app?daddr=${dropoffCoord.latitude},${dropoffCoord.longitude}`,
-        android: `google.navigation:q=${dropoffCoord.latitude},${dropoffCoord.longitude}`,
-      });
-      
-      if (url) {
-        // TODO: Implement Linking.openURL(url)
-        Toast.show({
-          type: 'info',
-          text1: 'Navigation',
-          text2: 'Opening external navigation app',
-        });
-      }
-    }
-  }, [dropoffCoord]);
+    openExternalNavigation(
+      dropoffCoord
+        ? {
+            latitude: dropoffCoord.latitude,
+            longitude: dropoffCoord.longitude,
+            label: currentJob?.dropoffAddress || null,
+          }
+        : null
+    );
+  }, [currentJob?.dropoffAddress, dropoffCoord]);
   
   const isPaused = status === 'PAUSED';
   
+  // ✅ FIX: Don't render if job is PAUSED - JobPausedScreen will handle this
+  if (isPaused) {
+    return null;
+  }
+  
+  // ✅ FIX: Don't render if no job
+  if (!currentJob) {
+    return null;
+  }
+  
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
-      {/* Header */}
+      {/* ✅ KEEP SCREEN AWAKE - Prevent device sleep during active ride */}
+      <KeepAwake />
+      
+      {/* Professional Header */}
       <View style={styles.header}>
-        <View style={styles.headerLeft}>
-          <Icon name="taxi" size={28} color="#fbbf24" />
-          <View style={styles.headerText}>
-            <Text style={styles.headerTitle}>RIDE IN PROGRESS</Text>
-            <Text style={styles.headerSubtitle}>
-              {currentJob?.publicJobId || currentJob?.id || 'Job'}
-            </Text>
-          </View>
+        <View style={styles.headerContent}>
+          <Text style={styles.headerTitle}>ACTIVE TRIP</Text>
+          <Text style={styles.headerJobId}>
+            #{(currentJob?.publicJobId || currentJob?.id || '---').slice(0, 6)}
+          </Text>
         </View>
         <TouchableOpacity
           style={styles.navButton}
           onPress={handleNavigation}
           activeOpacity={0.7}
         >
-          <Icon name="navigation" size={24} color="#fff" />
+          <Icon name="navigation-variant" size={18} color="#fff" />
         </TouchableOpacity>
       </View>
       
-      {/* ✅ NEW: Movement Status Debug Bar */}
+      {/* Professional Movement Status Bar */}
       <View style={[
-        styles.movementStatusBar,
-        movementStatus.isMoving ? styles.movementStatusMoving : styles.movementStatusStopped
+        styles.statusBar,
+        movementStatus.isMoving ? styles.statusBarMoving : styles.statusBarStopped
       ]}>
-        <View style={styles.movementStatusLeft}>
-          <Text style={styles.movementStatusIcon}>
-            {movementStatus.isMoving ? '🚗' : '🛑'}
+        <View style={styles.statusLeft}>
+          <View style={[
+            styles.statusIndicator,
+            movementStatus.isMoving ? styles.statusIndicatorMoving : styles.statusIndicatorStopped
+          ]} />
+          <Text style={styles.statusText}>
+            {movementStatus.isMoving ? 'IN MOTION' : 'STATIONARY'}
           </Text>
-          <View>
-            <Text style={styles.movementStatusText}>
-              {movementStatus.isMoving ? 'MOVING' : 'STOPPED'}
-            </Text>
-            <Text style={styles.movementStatusSubtext}>
-              {movementStatus.method}
-            </Text>
-          </View>
+          <Text style={[styles.statusDetail, movementStatus.waitingReady && styles.waitingActiveLabel]}>
+            {movementStatus.waitingReady ? `WAITING • ${movementStatus.method}` : movementStatus.method}
+          </Text>
         </View>
-        <View style={styles.movementStatusRight}>
-          <Text style={styles.movementStatusSpeed}>
-            {movementStatus.speed.toFixed(1)} km/h
-          </Text>
-          <Text style={styles.movementStatusSubtext}>
-            Current Speed
-          </Text>
+        <View style={styles.statusRight}>
+          <Text style={styles.statusSpeed}>{movementStatus.speed.toFixed(0)}</Text>
+          <Text style={styles.statusSpeedUnit}>KM/H</Text>
         </View>
       </View>
       
@@ -525,8 +670,63 @@ const ActiveRideScreen: React.FC<ActiveRideScreenProps> = () => {
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
       >
-        {/* Live Map */}
+        {/* Professional Meter Display */}
+        <View style={styles.meterSection}>
+          {/* Main Fare - Professional Meter Style */}
+          <View style={styles.meterDisplay}>
+            <View style={styles.meterHeader}>
+              <Text style={styles.meterHeaderText}>TAXIMETER</Text>
+              <View style={styles.liveIndicator}>
+                <View style={[styles.liveDot, isPaused && styles.liveDotPaused]} />
+                <Text style={styles.liveText}>{isPaused ? 'PAUSED' : 'RUNNING'}</Text>
+              </View>
+            </View>
+            <Animated.Text style={[styles.meterFare, { transform: [{ scale: pulseAnim }] }]}>
+              ${(Number(currentFare) || 0).toFixed(2)}
+            </Animated.Text>
+          </View>
+
+          {/* Professional Stats Row */}
+          <View style={styles.statsRow}>
+            <View style={styles.statBox}>
+              <Text style={styles.statValue}>{((timer?.distanceMeters || 0) / 1000).toFixed(2)}</Text>
+              <Text style={styles.statUnit}>KM</Text>
+              <Text style={styles.statCost}>${fareDetails.distance.toFixed(2)}</Text>
+            </View>
+            <View style={styles.statDivider} />
+            <View style={styles.statBox}>
+              <Text style={styles.statValue}>{formatTime(displayElapsedSeconds)}</Text>
+              <Text style={styles.statUnit}>TIME</Text>
+              <Text style={styles.statCost}>${fareDetails.time.toFixed(2)}</Text>
+            </View>
+            <View style={styles.statDivider} />
+            <View style={styles.statBox}>
+              <Text style={styles.statValue}>{formatTime(derivedWaitingSeconds)}</Text>
+              <Text style={[styles.statUnit, movementStatus.waitingReady && styles.waitingActiveLabel]}>
+                {movementStatus.waitingReady ? 'WAITING' : 'WAIT'}
+              </Text>
+              <Text style={[styles.statCost, movementStatus.waitingReady && styles.waitingActiveCost]}>
+                ${fareDetails.waiting.toFixed(2)}
+              </Text>
+            </View>
+            <View style={styles.statDivider} />
+            <View style={styles.statBox}>
+              <Text style={styles.statValue}>{Math.round(currentSpeed)}</Text>
+              <Text style={styles.statUnit}>KM/H</Text>
+            </View>
+          </View>
+        </View>
+
+        {/* Map */}
         <View style={styles.mapContainer}>
+          <TouchableOpacity
+            style={styles.mapExpandButton}
+            activeOpacity={0.85}
+            onPress={() => setShowMapModal(true)}
+          >
+            <Icon name="fullscreen" size={14} color="#fff" />
+            <Text style={styles.mapExpandText}>Full Map</Text>
+          </TouchableOpacity>
           <RideMap
             pickup={pickupCoord}
             dropoff={dropoffCoord}
@@ -535,134 +735,35 @@ const ActiveRideScreen: React.FC<ActiveRideScreenProps> = () => {
             style={styles.map}
             enable3D={true}
             followDriver={true}
-            height={280}
+            height={200}
+            mapProviderOverride={mapProvider}
+            updateInterval={mapAnimationInterval}
           />
-          
-          {/* Speed Badge */}
-          {currentSpeed > 0 && (
-            <View style={styles.speedBadge}>
-              <Icon name="speedometer" size={16} color="#fff" />
-              <Text style={styles.speedText}>{Math.round(currentSpeed)} km/h</Text>
+          {mapProviderLoading && (
+            <View style={styles.mapLoadingOverlay}>
+              <ActivityIndicator size="small" color="#fbbf24" />
+              <Text style={styles.mapLoadingText}>Syncing map provider…</Text>
             </View>
           )}
         </View>
         
-        {/* MEGA FARE METER */}
-        <Animated.View style={[styles.meterCard, { transform: [{ scale: pulseAnim }] }]}>
-          <Text style={styles.meterLabel}>CURRENT FARE</Text>
-          <Text style={styles.meterAmount}>${currentFare.toFixed(2)}</Text>
-          <View style={styles.meterStatus}>
-            <View style={[styles.statusDot, isPaused && styles.statusDotPaused]} />
-            <Text style={styles.meterStatusText}>
-              {isPaused ? 'PAUSED - Waiting' : 'LIVE - Tracking'}
-            </Text>
-          </View>
-        </Animated.View>
+        {/* Nearby Jobs Queue - Smart job queuing system */}
+        <NearbyJobsQueue />
         
-        {/* Stats Grid */}
-        <View style={styles.statsGrid}>
-          {/* Distance */}
-          <View style={styles.statCard}>
-            <View style={[styles.statIcon, { backgroundColor: '#10b981' }]}>
-              <Icon name="map-marker-distance" size={24} color="#fff" />
-            </View>
-            <Text style={styles.statLabel}>Distance</Text>
-            <Text style={styles.statValue}>
-              {((timer?.distanceMeters || 0) / 1000).toFixed(2)} km
+        {/* Trip Info */}
+        <View style={styles.tripInfo}>
+          <View style={styles.tripRow}>
+            <Icon name="account-circle" size={16} color="#94a3b8" />
+            <Text style={styles.tripText}>{currentJob?.passenger?.name || 'Passenger'}</Text>
+            {currentJob?.passenger?.phone && (
+              <Text style={styles.tripPhone}>{currentJob.passenger.phone}</Text>
+            )}
+          </View>
+          <View style={styles.tripRow}>
+            <Icon name="flag-checkered" size={16} color="#94a3b8" />
+            <Text style={styles.tripText} numberOfLines={1}>
+              {currentJob?.dropoffAddress || 'Destination'}
             </Text>
-            <Text style={styles.statCost}>${fareDetails.distance.toFixed(2)}</Text>
-          </View>
-          
-          {/* Time */}
-          <View style={styles.statCard}>
-            <View style={[styles.statIcon, { backgroundColor: '#3b82f6' }]}>
-              <Icon name="clock-outline" size={24} color="#fff" />
-            </View>
-            <Text style={styles.statLabel}>Duration</Text>
-            <Text style={styles.statValue}>{formatTime(timer?.elapsedSeconds || 0)}</Text>
-            <Text style={styles.statCost}>${fareDetails.time.toFixed(2)}</Text>
-          </View>
-          
-          {/* Waiting */}
-          <View style={styles.statCard}>
-            <View style={[styles.statIcon, { backgroundColor: '#f59e0b' }]}>
-              <Icon name="timer-sand" size={24} color="#fff" />
-            </View>
-            <Text style={styles.statLabel}>Waiting</Text>
-            <Text style={styles.statValue}>{formatTime(localWaitingSeconds)}</Text>
-            <Text style={styles.statCost}>
-              ${(((localWaitingSeconds / 60) * (selectedTariff?.waitingTimeRate || 0))).toFixed(2)}
-            </Text>
-          </View>
-        </View>
-        
-        {/* Fare Breakdown */}
-        <View style={styles.breakdownCard}>
-          <Text style={styles.breakdownTitle}>FARE BREAKDOWN</Text>
-          
-          <View style={styles.breakdownRow}>
-            <Text style={styles.breakdownLabel}>Base Fare</Text>
-            <Text style={styles.breakdownValue}>${fareDetails.base.toFixed(2)}</Text>
-          </View>
-          
-          <View style={styles.breakdownRow}>
-            <Text style={styles.breakdownLabel}>
-              Distance ({((timer?.distanceMeters || 0) / 1000).toFixed(2)} km × ${selectedTariff?.perKmRate || 0}/km)
-            </Text>
-            <Text style={styles.breakdownValue}>${fareDetails.distance.toFixed(2)}</Text>
-          </View>
-          
-          <View style={styles.breakdownRow}>
-            <Text style={styles.breakdownLabel}>
-              Duration ({Math.floor((timer?.elapsedSeconds || 0) / 60)} min × ${selectedTariff?.perMinuteRate || 0}/min)
-            </Text>
-            <Text style={styles.breakdownValue}>${fareDetails.time.toFixed(2)}</Text>
-          </View>
-          
-          {fareDetails.waiting > 0 && (
-            <View style={styles.breakdownRow}>
-              <Text style={styles.breakdownLabel}>
-                Waiting ({Math.floor(localWaitingSeconds / 60)} min × ${selectedTariff?.waitingTimeRate || 0}/min)
-              </Text>
-              <Text style={styles.breakdownValue}>${fareDetails.waiting.toFixed(2)}</Text>
-            </View>
-          )}
-          
-          <View style={styles.breakdownDivider} />
-          
-          <View style={styles.breakdownRow}>
-            <Text style={styles.breakdownTotal}>TOTAL</Text>
-            <Text style={styles.breakdownTotalValue}>${currentFare.toFixed(2)}</Text>
-          </View>
-        </View>
-        
-        {/* Rider Info */}
-        <View style={styles.riderCard}>
-          <Text style={styles.riderTitle}>PASSENGER</Text>
-          <View style={styles.riderRow}>
-            <Icon name="account" size={20} color="#64748b" />
-            <Text style={styles.riderText}>
-              {currentJob?.passenger?.name || 'Passenger'}
-            </Text>
-          </View>
-          {currentJob?.passenger?.phone && (
-            <View style={styles.riderRow}>
-              <Icon name="phone" size={20} color="#64748b" />
-              <Text style={styles.riderText}>{currentJob.passenger.phone}</Text>
-            </View>
-          )}
-        </View>
-        
-        {/* Destination */}
-        <View style={styles.destinationCard}>
-          <View style={styles.destinationRow}>
-            <Icon name="flag-checkered" size={24} color="#ef4444" />
-            <View style={styles.destinationText}>
-              <Text style={styles.destinationLabel}>DROP-OFF</Text>
-              <Text style={styles.destinationAddress}>
-                {currentJob?.dropoffAddress || 'Destination'}
-              </Text>
-            </View>
           </View>
         </View>
       </ScrollView>
@@ -670,37 +771,82 @@ const ActiveRideScreen: React.FC<ActiveRideScreenProps> = () => {
       {/* Action Buttons */}
       <View style={styles.actions}>
         <View style={styles.actionsRow}>
-          {/* ✅ NEW: Change Tariff Button */}
+          {/* Change Tariff */}
           <TouchableOpacity
-            style={[styles.actionButton, styles.tariffButton]}
+            style={styles.secondaryButton}
             onPress={() => setShowTariffModal(true)}
             activeOpacity={0.8}
           >
-            <Icon name="swap-horizontal" size={20} color="#fff" />
-            <Text style={styles.actionTextSmall}>Change Tariff</Text>
+            <Icon name="swap-horizontal" size={16} color="#fff" />
+            <Text style={styles.secondaryButtonText}>TARIFF</Text>
           </TouchableOpacity>
           
+          {/* Pause */}
           <TouchableOpacity
-            style={[styles.actionButton, styles.pauseButton]}
+            style={styles.secondaryButton}
             onPress={handlePause}
             activeOpacity={0.8}
           >
-            <Icon name="pause-circle" size={24} color="#fff" />
-            <Text style={styles.actionText}>Pause</Text>
+            <Icon name="pause" size={16} color="#fff" />
+            <Text style={styles.secondaryButtonText}>PAUSE</Text>
           </TouchableOpacity>
         </View>
         
-        {/* Full width Complete button */}
+        {/* Complete Ride - Primary Action */}
         <TouchableOpacity
-          style={[styles.actionButton, styles.completeButton, styles.completeButtonFull]}
+          style={styles.primaryButton}
           onPress={handleComplete}
           activeOpacity={0.8}
         >
-          <Icon name="check-circle" size={28} color="#fff" />
-          <Text style={styles.actionText}>Complete Ride</Text>
+          <Icon name="check-bold" size={20} color="#000" />
+          <Text style={styles.primaryButtonText}>COMPLETE TRIP</Text>
         </TouchableOpacity>
       </View>
       
+      {/* Full-Screen Map Modal */}
+      <Modal
+        visible={showMapModal}
+        animationType="fade"
+        transparent
+        onRequestClose={() => setShowMapModal(false)}
+      >
+        <View style={styles.mapModalOverlay}>
+          <View style={styles.mapModalContent}>
+            <View style={styles.mapModalHeader}>
+              <Text style={styles.mapModalTitle}>Navigation Map</Text>
+              <View style={styles.mapModalActions}>
+                <TouchableOpacity
+                  style={styles.mapModalActionButton}
+                  onPress={handleNavigation}
+                  activeOpacity={0.85}
+                >
+                  <Icon name="navigation-variant" size={16} color="#fff" />
+                  <Text style={styles.mapModalActionText}>Open Maps</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.mapModalClose}
+                  onPress={() => setShowMapModal(false)}
+                  activeOpacity={0.85}
+                >
+                  <Text style={styles.mapModalCloseText}>Close</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+            <RideMap
+              pickup={pickupCoord}
+              dropoff={dropoffCoord}
+              driver={driverCoord}
+              route={routeCoordinates}
+              style={styles.mapModalMap}
+              enable3D
+              followDriver
+              mapProviderOverride={mapProvider}
+              updateInterval={mapAnimationInterval}
+            />
+          </View>
+        </View>
+      </Modal>
+
       {/* ✅ NEW: Tariff Change Modal */}
       <Modal
         visible={showTariffModal}
@@ -798,477 +944,605 @@ const ActiveRideScreen: React.FC<ActiveRideScreenProps> = () => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0f172a', // Dark blue-gray
+    backgroundColor: '#000000',
+    paddingTop: 0,
   },
+  // Professional Header
   header: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 20,
-    paddingVertical: 16,
-    backgroundColor: '#1e293b',
-    borderBottomWidth: 2,
-    borderBottomColor: '#fbbf24',
+    paddingHorizontal: 16,
+    paddingVertical: 4,
+    backgroundColor: '#1a1a1a',
+    borderBottomWidth: 1,
+    borderBottomColor: '#333',
   },
-  headerLeft: {
+  headerContent: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
   },
-  headerText: {
-    gap: 2,
-  },
   headerTitle: {
-    fontSize: 16,
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#888',
+    letterSpacing: 1.5,
+  },
+  headerJobId: {
+    fontSize: 11,
     fontWeight: '700',
     color: '#fbbf24',
-    letterSpacing: 1,
-  },
-  headerSubtitle: {
-    fontSize: 12,
-    color: '#94a3b8',
+    fontFamily: Platform.OS === 'ios' ? 'Courier New' : 'monospace',
   },
   navButton: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: '#3b82f6',
+    width: 36,
+    height: 36,
+    borderRadius: 4,
+    backgroundColor: '#333',
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  // Professional Status Bar
+  statusBar: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#333',
+  },
+  statusBarMoving: {
+    backgroundColor: '#1a2e1a',
+  },
+  statusBarStopped: {
+    backgroundColor: '#2e1a1a',
+  },
+  statusLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  statusIndicator: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+  statusIndicatorMoving: {
+    backgroundColor: '#22c55e',
+  },
+  statusIndicatorStopped: {
+    backgroundColor: '#ef4444',
+  },
+  statusText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#fff',
+    letterSpacing: 0.5,
+  },
+  statusDetail: {
+    fontSize: 9,
+    color: '#666',
+    marginLeft: 4,
+  },
+  statusRight: {
+    alignItems: 'flex-end',
+  },
+  statusSpeed: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#fff',
+    fontFamily: Platform.OS === 'ios' ? 'Courier New' : 'monospace',
+    lineHeight: 16,
+  },
+  statusSpeedUnit: {
+    fontSize: 8,
+    fontWeight: '600',
+    color: '#666',
+    marginTop: 2,
+    letterSpacing: 0.5,
   },
   scrollView: {
     flex: 1,
   },
   scrollContent: {
-    paddingBottom: 20,
+    paddingBottom: 8,
   },
-  mapContainer: {
-    position: 'relative',
+  // Professional Meter Section
+  meterSection: {
+    backgroundColor: '#1a1a1a',
+    margin: 10,
+    borderRadius: 8,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: '#333',
   },
-  map: {
-    width: '100%',
-    height: 280,
-  },
-  speedBadge: {
-    position: 'absolute',
-    top: 16,
-    right: 16,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 20,
-  },
-  speedText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#fff',
-  },
-  meterCard: {
-    margin: 20,
-    padding: 24,
-    backgroundColor: '#1e293b',
-    borderRadius: 20,
-    alignItems: 'center',
-    borderWidth: 3,
-    borderColor: '#fbbf24',
-    shadowColor: '#fbbf24',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 8,
-  },
-  meterLabel: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#94a3b8',
-    letterSpacing: 2,
-    marginBottom: 8,
-  },
-  meterAmount: {
-    fontSize: 56,
-    fontWeight: '800',
-    color: '#fbbf24',
-    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
-  },
-  meterStatus: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginTop: 12,
-  },
-  statusDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    backgroundColor: '#22c55e',
-  },
-  statusDotPaused: {
-    backgroundColor: '#f59e0b',
-  },
-  meterStatusText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#cbd5e1',
-  },
-  statsGrid: {
-    flexDirection: 'row',
-    paddingHorizontal: 20,
-    gap: 12,
-    marginBottom: 20,
-  },
-  statCard: {
-    flex: 1,
-    backgroundColor: '#1e293b',
-    borderRadius: 16,
+  meterDisplay: {
     padding: 16,
-    alignItems: 'center',
-    gap: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#333',
   },
-  statIcon: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 4,
-  },
-  statLabel: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: '#94a3b8',
-    textTransform: 'uppercase',
-  },
-  statValue: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: '#f1f5f9',
-  },
-  statCost: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#fbbf24',
-  },
-  breakdownCard: {
-    marginHorizontal: 20,
-    marginBottom: 20,
-    padding: 20,
-    backgroundColor: '#1e293b',
-    borderRadius: 16,
-  },
-  breakdownTitle: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#cbd5e1',
-    letterSpacing: 1,
-    marginBottom: 16,
-  },
-  breakdownRow: {
+  meterHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 12,
   },
-  breakdownLabel: {
-    fontSize: 13,
-    color: '#94a3b8',
-    flex: 1,
-  },
-  breakdownValue: {
-    fontSize: 15,
-    fontWeight: '600',
-    color: '#f1f5f9',
-  },
-  breakdownDivider: {
-    height: 1,
-    backgroundColor: '#334155',
-    marginVertical: 12,
-  },
-  breakdownTotal: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#fbbf24',
-  },
-  breakdownTotalValue: {
-    fontSize: 20,
-    fontWeight: '800',
-    color: '#fbbf24',
-  },
-  riderCard: {
-    marginHorizontal: 20,
-    marginBottom: 20,
-    padding: 16,
-    backgroundColor: '#1e293b',
-    borderRadius: 16,
-  },
-  riderTitle: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#94a3b8',
-    letterSpacing: 1,
-    marginBottom: 12,
-  },
-  riderRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    marginBottom: 8,
-  },
-  riderText: {
-    fontSize: 14,
-    color: '#e2e8f0',
-  },
-  destinationCard: {
-    marginHorizontal: 20,
-    marginBottom: 20,
-    padding: 16,
-    backgroundColor: '#1e293b',
-    borderRadius: 16,
-    borderLeftWidth: 4,
-    borderLeftColor: '#ef4444',
-  },
-  destinationRow: {
-    flexDirection: 'row',
-    gap: 12,
-  },
-  destinationText: {
-    flex: 1,
-    gap: 4,
-  },
-  destinationLabel: {
+  meterHeaderText: {
     fontSize: 11,
     fontWeight: '700',
-    color: '#94a3b8',
-    letterSpacing: 1,
+    color: '#888',
+    letterSpacing: 1.5,
   },
-  destinationAddress: {
-    fontSize: 14,
-    color: '#e2e8f0',
-    lineHeight: 20,
-  },
-  actions: {
-    paddingHorizontal: 20,
-    paddingBottom: 20,
-    gap: 12,
-    backgroundColor: '#0f172a',
-    borderTopWidth: 1,
-    borderTopColor: '#1e293b',
-    paddingTop: 16,
-  },
-  actionsRow: {
+  liveIndicator: {
     flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  liveDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#22c55e',
+  },
+  liveDotPaused: {
+    backgroundColor: '#ef4444',
+  },
+  liveText: {
+    fontSize: 9,
+    fontWeight: '700',
+    color: '#888',
+    letterSpacing: 0.5,
+  },
+  meterFare: {
+    fontSize: 48,
+    fontWeight: '700',
+    color: '#fbbf24',
+    fontFamily: Platform.OS === 'ios' ? 'Courier New' : 'monospace',
+    letterSpacing: -1,
+    textAlign: 'center',
+    alignSelf: 'center',
+    width: '100%',
+  },
+  // Professional Stats Row
+  statsRow: {
+    flexDirection: 'row',
+    paddingVertical: 12,
+    paddingHorizontal: 8,
+  },
+  statBox: {
+    flex: 1,
+    alignItems: 'center',
+  },
+  statValue: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#fff',
+    fontFamily: Platform.OS === 'ios' ? 'Courier New' : 'monospace',
+  },
+  statUnit: {
+    fontSize: 9,
+    fontWeight: '600',
+    color: '#666',
+    marginTop: 2,
+    letterSpacing: 0.5,
+  },
+  statCost: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#fbbf24',
+    marginTop: 4,
+  },
+  waitingActiveLabel: {
+    color: '#f97316',
+  },
+  waitingActiveCost: {
+    color: '#f97316',
+  },
+  statDivider: {
+    width: 1,
+    backgroundColor: '#333',
+    marginHorizontal: 4,
+  },
+  // Map
+  mapContainer: {
+    margin: 10,
+    borderRadius: 8,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: '#333',
+    position: 'relative',
+  },
+  map: {
+    width: '100%',
+    height: 200,
+  },
+  mapExpandButton: {
+    position: 'absolute',
+    top: 12,
+    right: 12,
+    zIndex: 2,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: 'rgba(0, 0, 0, 0.55)',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 16,
+  },
+  mapExpandText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#fff',
+    letterSpacing: 0.3,
+  },
+  mapLoadingOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    borderRadius: 8,
+    backgroundColor: 'rgba(0, 0, 0, 0.45)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+  },
+  mapLoadingText: {
+    color: '#fbbf24',
+    fontSize: 11,
+    letterSpacing: 0.5,
+  },
+  mapModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.85)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 16,
+  },
+  mapModalContent: {
+    width: '100%',
+    height: '85%',
+    backgroundColor: '#0f111a',
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: '#222',
+    overflow: 'hidden',
+  },
+  mapModalHeader: {
+    padding: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#222',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
     gap: 12,
   },
-  actionButton: {
+  mapModalTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#fff',
+  },
+  mapModalActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  mapModalActionButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: '#2563eb',
+  },
+  mapModalActionText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#fff',
+  },
+  mapModalClose: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#444',
+  },
+  mapModalCloseText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#fff',
+  },
+  mapModalMap: {
     flex: 1,
+  },
+  // Cover Jobs Section
+  coverJobsSection: {
+    backgroundColor: '#1a1a1a',
+    margin: 10,
+    borderRadius: 8,
+    padding: 10,
+    borderWidth: 1,
+    borderColor: '#333',
+  },
+  coverJobsHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 8,
+  },
+  coverJobsTitle: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#888',
+    letterSpacing: 1,
+    flex: 1,
+  },
+  coverJobCard: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: '#0d0d0d',
+    borderRadius: 6,
+    padding: 10,
+    marginBottom: 6,
+    borderWidth: 1,
+    borderColor: '#2a2a2a',
+  },
+  coverJobLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+    gap: 8,
+  },
+  coverJobIndex: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#fbbf24',
+    fontFamily: Platform.OS === 'ios' ? 'Courier New' : 'monospace',
+    width: 22,
+  },
+  coverJobDetails: {
+    flex: 1,
+  },
+  coverJobPickup: {
+    fontSize: 11,
+    color: '#22c55e',
+    fontWeight: '600',
+    marginBottom: 2,
+  },
+  coverJobDropoff: {
+    fontSize: 10,
+    color: '#888',
+  },
+  coverJobRight: {
+    alignItems: 'flex-end',
+  },
+  coverJobFare: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#fbbf24',
+    fontFamily: Platform.OS === 'ios' ? 'Courier New' : 'monospace',
+  },
+  coverJobStatus: {
+    fontSize: 8,
+    fontWeight: '600',
+    color: '#666',
+    letterSpacing: 0.5,
+    marginTop: 2,
+  },
+  noCoverJobs: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 8,
-    paddingVertical: 16,
-    borderRadius: 16,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 4,
-    elevation: 4,
+    paddingVertical: 12,
   },
-  pauseButton: {
-    backgroundColor: '#f59e0b',
+  noCoverJobsText: {
+    fontSize: 11,
+    color: '#666',
   },
-  completeButton: {
-    backgroundColor: '#22c55e',
-    flex: undefined, // ✅ FIX: Remove flex when full width
+  // Trip Info
+  tripInfo: {
+    backgroundColor: '#1a1a1a',
+    margin: 10,
+    borderRadius: 8,
+    padding: 12,
+    gap: 8,
+    borderWidth: 1,
+    borderColor: '#333',
   },
-  completeButtonFull: {
-    width: '100%',
-    flex: undefined, // ✅ FIX: Remove flex constraint for full width button
+  tripRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
   },
-  tariffButton: {
-    backgroundColor: '#8b5cf6',
+  tripText: {
+    fontSize: 11,
+    color: '#ccc',
+    flex: 1,
   },
-  actionText: {
-    fontSize: 16,
+  tripPhone: {
+    fontSize: 10,
+    color: '#888',
+  },
+  // Professional Actions - With safe area padding for navigation bar
+  actions: {
+    paddingHorizontal: 10,
+    paddingBottom: 28, // Extra padding to ensure button doesn't hide under nav bar
+    paddingTop: 10,
+    gap: 8,
+    backgroundColor: '#000',
+    borderTopWidth: 1,
+    borderTopColor: '#333',
+  },
+  actionsRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  secondaryButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 11,
+    borderRadius: 4,
+    backgroundColor: '#333',
+    borderWidth: 1,
+    borderColor: '#444',
+  },
+  secondaryButtonText: {
+    fontSize: 10,
     fontWeight: '700',
     color: '#fff',
+    letterSpacing: 0.5,
   },
-  actionTextSmall: {
-    fontSize: 13,
+  primaryButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 14,
+    borderRadius: 4,
+    backgroundColor: '#fbbf24',
+  },
+  primaryButtonText: {
+    fontSize: 12,
     fontWeight: '700',
-    color: '#fff',
+    color: '#000',
+    letterSpacing: 1,
   },
-  // ✅ NEW: Tariff Modal Styles
+  // Tariff Modal
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    backgroundColor: 'rgba(0, 0, 0, 0.9)',
     justifyContent: 'flex-end',
   },
   modalContent: {
-    backgroundColor: '#1e293b',
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    paddingBottom: 32,
-    maxHeight: height * 0.8,
+    backgroundColor: '#1a1a1a',
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    paddingBottom: 20,
+    maxHeight: height * 0.7,
+    borderTopWidth: 1,
+    borderColor: '#333',
   },
   modalHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingHorizontal: 24,
-    paddingVertical: 20,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
     borderBottomWidth: 1,
-    borderBottomColor: '#334155',
+    borderBottomColor: '#333',
   },
   modalTitle: {
-    fontSize: 20,
+    fontSize: 16,
     fontWeight: '700',
-    color: '#f1f5f9',
+    color: '#fff',
   },
   modalCloseButton: {
-    padding: 8,
+    padding: 4,
   },
   modalSubtitle: {
-    fontSize: 14,
-    color: '#94a3b8',
-    paddingHorizontal: 24,
-    paddingTop: 16,
-    paddingBottom: 8,
+    fontSize: 11,
+    color: '#888',
+    paddingHorizontal: 16,
+    paddingTop: 10,
+    paddingBottom: 4,
   },
   tariffList: {
-    paddingHorizontal: 24,
-    paddingVertical: 12,
-    minHeight: 200,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    minHeight: 120,
   },
   emptyState: {
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 40,
+    paddingVertical: 24,
   },
   emptyStateText: {
-    fontSize: 18,
+    fontSize: 14,
     fontWeight: '600',
-    color: '#94a3b8',
-    marginTop: 16,
-    marginBottom: 8,
+    color: '#888',
+    marginTop: 10,
+    marginBottom: 4,
   },
   emptyStateSubtext: {
-    fontSize: 14,
-    color: '#64748b',
+    fontSize: 11,
+    color: '#666',
     textAlign: 'center',
-    paddingHorizontal: 32,
+    paddingHorizontal: 20,
   },
   tariffOption: {
-    backgroundColor: '#0f172a',
-    borderRadius: 16,
-    padding: 16,
-    marginBottom: 12,
-    borderWidth: 2,
-    borderColor: '#334155',
+    backgroundColor: '#0a0a0a',
+    borderRadius: 8,
+    padding: 12,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: '#333',
   },
   tariffOptionSelected: {
     borderColor: '#8b5cf6',
-    backgroundColor: '#1e1b4b',
+    backgroundColor: '#1a0a2e',
   },
   tariffOptionHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 12,
+    marginBottom: 8,
   },
   tariffOptionName: {
-    fontSize: 18,
+    fontSize: 14,
     fontWeight: '700',
-    color: '#f1f5f9',
+    color: '#fff',
   },
   currentBadge: {
     backgroundColor: '#8b5cf6',
-    paddingHorizontal: 12,
-    paddingVertical: 4,
-    borderRadius: 12,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 8,
   },
   currentBadgeText: {
-    fontSize: 10,
+    fontSize: 8,
     fontWeight: '700',
     color: '#fff',
-    letterSpacing: 1,
+    letterSpacing: 0.5,
   },
   tariffOptionRates: {
     flexDirection: 'row',
-    gap: 16,
+    gap: 10,
   },
   tariffRate: {
     flex: 1,
   },
   tariffRateLabel: {
-    fontSize: 11,
-    color: '#64748b',
-    marginBottom: 4,
+    fontSize: 9,
+    color: '#666',
+    marginBottom: 2,
   },
   tariffRateValue: {
-    fontSize: 16,
+    fontSize: 12,
     fontWeight: '700',
     color: '#fbbf24',
+    fontFamily: Platform.OS === 'ios' ? 'Courier New' : 'monospace',
   },
   modalCancelButton: {
-    marginHorizontal: 24,
-    marginTop: 16,
-    paddingVertical: 16,
-    backgroundColor: '#334155',
-    borderRadius: 16,
+    marginHorizontal: 16,
+    marginTop: 10,
+    paddingVertical: 12,
+    backgroundColor: '#333',
+    borderRadius: 8,
     alignItems: 'center',
   },
   modalCancelText: {
-    fontSize: 16,
+    fontSize: 13,
     fontWeight: '700',
-    color: '#f1f5f9',
-  },
-  // ✅ NEW: Movement Status Debug Bar
-  movementStatusBar: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingVertical: 12,
-    borderBottomWidth: 2,
-  },
-  movementStatusMoving: {
-    backgroundColor: '#059669', // Green when moving
-    borderBottomColor: '#10b981',
-  },
-  movementStatusStopped: {
-    backgroundColor: '#dc2626', // Red when stopped
-    borderBottomColor: '#ef4444',
-  },
-  movementStatusLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-  },
-  movementStatusIcon: {
-    fontSize: 28,
-  },
-  movementStatusText: {
-    fontSize: 16,
-    fontWeight: '800',
-    color: '#fff',
-    letterSpacing: 0.5,
-  },
-  movementStatusSubtext: {
-    fontSize: 11,
-    color: 'rgba(255, 255, 255, 0.7)',
-    marginTop: 2,
-  },
-  movementStatusRight: {
-    alignItems: 'flex-end',
-  },
-  movementStatusSpeed: {
-    fontSize: 18,
-    fontWeight: '800',
     color: '#fff',
   },
 });
 
 export default ActiveRideScreen;
-

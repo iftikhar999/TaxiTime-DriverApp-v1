@@ -1,31 +1,33 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import React, {
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
+    createContext,
+    useCallback,
+    useContext,
+    useEffect,
+    useMemo,
+    useRef,
+    useState,
 } from "react";
+import { Platform } from "react-native";
 import Toast from "react-native-toast-message";
 import {
-  endDriverShift,
-  fetchCompanyTariffs,
-  fetchCurrentShift,
-  fetchDriverVehicles,
-  fetchRideHistory,
-  startDriverShift,
+    endDriverShift,
+    fetchCompanyTariffs,
+    fetchCurrentShift,
+    fetchDriverVehicles,
+    fetchRecentJobs,
+    startDriverShift
 } from "../services/driverService";
 import {
-  notifyShiftEnded,
-  notifyShiftStarted,
-  registerDriverStateRestoration, // ✅ FIX: For cleanup
-  registerShiftRestoration,
-  unregisterDriverStateRestoration, // ✅ FIX: For cleanup
+    notifyShiftEnded,
+    notifyShiftStarted,
+    registerDriverStateRestoration, // ✅ FIX: For cleanup
+    registerShiftRestoration,
+    unregisterDriverStateRestoration, // ✅ FIX: For cleanup
 } from "../services/driverSocket";
 import { ForegroundService } from "../services/foregroundService"; // ✅ NEW: Foreground service
-import { RideSummary } from "../types/rides";
+import httpClient from "../services/httpClient";
+import { RecentJobSummary } from "../types/recentJob";
 import { ActiveShift, StartShiftPayload } from "../types/shift";
 import { Tariff } from "../types/tariff";
 import { DriverVehicle, DriverVehiclesResponse } from "../types/vehicle";
@@ -41,10 +43,10 @@ interface ShiftContextValue {
   tariffsLoading: boolean;
   tariffsError: string | null;
   activeShift: ActiveShift | null;
-  rideHistory: RideSummary[];
-  rideHistoryLoading: boolean;
+  recentJobs: RecentJobSummary[];
+  recentJobsLoading: boolean;
   refreshVehicles: () => Promise<void>;
-  selectVehicle: (vehicle: DriverVehicle) => Promise<void>;
+  selectVehicle: (vehicle: DriverVehicle | null) => Promise<void>;
   clearSelection: () => Promise<void>;
   refreshTariffs: (companyId?: string) => Promise<Tariff[]>;
   selectTariff: (tariff: Tariff) => Promise<void>;
@@ -52,7 +54,7 @@ interface ShiftContextValue {
   refreshCurrentShift: () => Promise<void>;
   startShift: (payload: StartShiftPayload) => Promise<void>;
   endShift: () => Promise<void>;
-  refreshRideHistory: (limit?: number) => Promise<void>;
+  refreshRecentJobs: (limit?: number) => Promise<void>;
   resetShiftState: () => Promise<void>;
 }
 
@@ -66,8 +68,8 @@ const ShiftContext = createContext<ShiftContextValue>({
   tariffsLoading: false,
   tariffsError: null,
   activeShift: null,
-  rideHistory: [],
-  rideHistoryLoading: false,
+  recentJobs: [],
+  recentJobsLoading: false,
   refreshVehicles: async () => {},
   selectVehicle: async () => {},
   clearSelection: async () => {},
@@ -77,7 +79,7 @@ const ShiftContext = createContext<ShiftContextValue>({
   refreshCurrentShift: async () => {},
   startShift: async () => {},
   endShift: async () => {},
-  refreshRideHistory: async () => {},
+  refreshRecentJobs: async () => {},
   resetShiftState: async () => {},
 });
 
@@ -89,6 +91,66 @@ const STORAGE_KEYS = {
   activeShift: "activeShift", // ✅ NEW: Persist active shift
 };
 
+const SHIFT_STATUS_LABELS: Record<string, string> = {
+  ONLINE: "Available",
+  AVAILABLE: "Available",
+  BUSY: "Busy",
+  BREAK: "On Break",
+  AWAY: "On Break",
+  OFFLINE: "Reconnecting",
+};
+
+const formatShiftStatusLabel = (status?: string): string => {
+  if (!status) {
+    return "Available";
+  }
+  const normalized = status.toUpperCase();
+  if (SHIFT_STATUS_LABELS[normalized]) {
+    return SHIFT_STATUS_LABELS[normalized];
+  }
+  return status.charAt(0).toUpperCase() + status.slice(1).toLowerCase();
+};
+
+const calculateShiftDurationMinutes = (shift: ActiveShift): number => {
+  const serverDuration =
+    typeof shift.duration === "number" && Number.isFinite(shift.duration)
+      ? Math.max(shift.duration, 0)
+      : 0;
+
+  if (shift.startTime) {
+    const startTimestamp = new Date(shift.startTime).getTime();
+    if (!Number.isNaN(startTimestamp)) {
+      const elapsedMinutes = Math.max(
+        Math.floor((Date.now() - startTimestamp) / 60000),
+        0
+      );
+      return Math.max(serverDuration, elapsedMinutes);
+    }
+  }
+
+  return serverDuration;
+};
+
+const formatShiftDurationLabel = (shift: ActiveShift): string => {
+  const totalMinutes = calculateShiftDurationMinutes(shift);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return `${hours}h ${minutes}m`;
+};
+
+const formatShiftEarnings = (amount?: number): string => {
+  const safeAmount =
+    typeof amount === "number" && Number.isFinite(amount) ? amount : 0;
+  return `$${safeAmount.toFixed(2)}`;
+};
+
+const getTripsCount = (value?: number): number => {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return 0;
+  }
+  return Math.max(0, Math.floor(value));
+};
+
 const parseVehiclesResponse = (
   response: DriverVehiclesResponse | undefined
 ): DriverVehicle[] => {
@@ -96,6 +158,13 @@ const parseVehiclesResponse = (
     return [];
   }
   return response.vehicles ?? [];
+};
+
+type ForegroundSnapshot = {
+  status: string;
+  duration?: string;
+  earnings?: string;
+  trips?: number;
 };
 
 export const ShiftProvider: React.FC<{ children: React.ReactNode }> = ({
@@ -112,9 +181,54 @@ export const ShiftProvider: React.FC<{ children: React.ReactNode }> = ({
   const [tariffsError, setTariffsError] = useState<string | null>(null);
   const [selectedTariff, setSelectedTariff] = useState<Tariff | null>(null);
   const [activeShift, setActiveShift] = useState<ActiveShift | null>(null);
-  const [rideHistory, setRideHistory] = useState<RideSummary[]>([]);
-  const [rideHistoryLoading, setRideHistoryLoading] = useState(false);
+  const [recentJobs, setRecentJobs] = useState<RecentJobSummary[]>([]);
+  const [recentJobsLoading, setRecentJobsLoading] = useState(false);
   const { driver } = useAuth();
+  const driverDisplayName = useMemo(() => {
+    if (driver?.firstName && driver?.lastName) {
+      return `${driver.firstName} ${driver.lastName}`;
+    }
+    return driver?.firstName || driver?.lastName || "Driver";
+  }, [driver?.firstName, driver?.lastName]);
+
+  const foregroundServiceStartedRef = useRef(false);
+  const notificationIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const startOrUpdateForegroundService = useCallback(
+    async (snapshot: ForegroundSnapshot) => {
+      if (Platform.OS !== "android") {
+        return;
+      }
+
+      const payload = {
+        driverName: driverDisplayName,
+        status: snapshot.status,
+        duration: snapshot.duration ?? "0m",
+        earnings: snapshot.earnings ?? "$0.00",
+        trips: snapshot.trips ?? 0,
+      };
+
+      try {
+        if (!foregroundServiceStartedRef.current) {
+          await ForegroundService.start(payload);
+          foregroundServiceStartedRef.current = true;
+          return;
+        }
+
+        await ForegroundService.update(payload);
+      } catch (error) {
+        console.warn("⚠️ Foreground notification update failed, restarting service", error);
+        try {
+          await ForegroundService.start(payload);
+          foregroundServiceStartedRef.current = true;
+        } catch (startError) {
+          console.error("❌ Unable to restart foreground service:", startError);
+          foregroundServiceStartedRef.current = false;
+        }
+      }
+    },
+    [driverDisplayName]
+  );
 
   // ✅ Persist active shift to AsyncStorage (defined early to avoid hoisting issues)
   const persistActiveShift = useCallback(async (shift: ActiveShift | null) => {
@@ -138,15 +252,18 @@ export const ShiftProvider: React.FC<{ children: React.ReactNode }> = ({
         storedSelected,
         storedTariffs,
         storedSelectedTariff,
-        storedActiveShift, // ✅ NEW: Load persisted shift
+        storedActiveShift,
       ] = await Promise.all([
         AsyncStorage.getItem(STORAGE_KEYS.vehicles),
         AsyncStorage.getItem(STORAGE_KEYS.selectedVehicle),
         AsyncStorage.getItem(STORAGE_KEYS.tariffs),
         AsyncStorage.getItem(STORAGE_KEYS.selectedTariff),
-        AsyncStorage.getItem(STORAGE_KEYS.activeShift), // ✅ NEW
+        AsyncStorage.getItem(STORAGE_KEYS.activeShift),
       ]);
 
+      console.log('🔄 Smart Cache: Loading cached state and validating with server...');
+
+      // Load cached vehicle/tariff data immediately for UI
       if (storedVehicles) {
         const parsed: DriverVehicle[] = JSON.parse(storedVehicles);
         setVehicles(parsed);
@@ -167,66 +284,158 @@ export const ShiftProvider: React.FC<{ children: React.ReactNode }> = ({
         setSelectedTariff(parsedSelectedTariff);
       }
 
-      // ✅ NEW: Restore active shift from storage ONLY if vehicle and tariff are also selected
-      if (storedActiveShift && storedSelected && storedSelectedTariff) {
-        const parsedShift: ActiveShift = JSON.parse(storedActiveShift);
-        setActiveShift(parsedShift);
-        console.log("✅ Restored active shift from storage:", parsedShift.id);
-        
-        // ✅ FIXED: Just notify shift started, don't call refreshCurrentShift
-        // Calling refreshCurrentShift would overwrite the restored shift if server returns null
-        // The socket connection will keep driver online and sync state
-        notifyShiftStarted();
-        
-        console.log("📡 Shift restored and socket notified - driver is online");
-        
-        // 🔥 CRITICAL: Restart foreground service when shift is restored
-        // This ensures the app stays alive even after being killed
+      // 🧠 SMART CACHE: Validate shift with server (company, driver, vehicle context)
+      let cachedShift: ActiveShift | null = null;
+      if (storedActiveShift) {
         try {
-          await ForegroundService.start({
-            driverName: driver?.firstName || 'Driver',
-            status: 'Available',
-            duration: '0h 0m', // Will be updated with actual stats
-            earnings: '$0.00',
-            trips: 0,
-          });
-          console.log('✅ Foreground service restarted - app will stay alive!');
-        } catch (error) {
-          console.error('❌ Failed to restart foreground service:', error);
-        }
-      } else if (storedActiveShift && (!storedSelected || !storedSelectedTariff)) {
-        // 🔥 NEW FIX: If shift exists but vehicle/tariff not selected, clear the shift
-        // User must go through vehicle/tariff selection first
-        console.log("⚠️ Shift found but vehicle/tariff not selected - clearing shift");
-        await AsyncStorage.removeItem(STORAGE_KEYS.activeShift);
-        setActiveShift(null);
-      } else {
-        // ✅ Only fetch from server if we don't have a persisted shift
-        console.log("ℹ️ No persisted shift found - checking server");
-        try {
-          const serverShift = await fetchCurrentShift();
+          cachedShift = JSON.parse(storedActiveShift);
+          const shiftAge = Date.now() - new Date(cachedShift.startTime).getTime();
           
-          // 🔥 NEW FIX: Only restore shift from server if vehicle/tariff are selected
-          if (serverShift && storedSelected && storedSelectedTariff) {
-            setActiveShift(serverShift);
-            await persistActiveShift(serverShift);
-            notifyShiftStarted();
-            console.log("✅ Shift fetched from server and restored");
-          } else if (serverShift && (!storedSelected || !storedSelectedTariff)) {
-            // Server has shift but no vehicle/tariff selected - user must select first
-            console.log("⚠️ Server has shift but vehicle/tariff not selected - user must select first");
-            // Don't set the shift, let user go through selection flow
-          } else {
-            console.log("ℹ️ No active shift on server");
-          }
-        } catch (error) {
-          console.error("Failed to fetch shift from server", error);
+          console.log(`📦 Cached shift found: ${cachedShift.id}`);
+          console.log(`   Age: ${Math.floor(shiftAge / 1000 / 60)} minutes`);
+          console.log(`   Status: ${cachedShift.status}`);
+        } catch (e) {
+          console.error('Failed to parse cached shift:', e);
         }
       }
+
+      // 🌐 Always validate with server for accurate state
+      console.log('🌐 Fetching current shift from server for validation...');
+      let serverShift: ActiveShift | null = null;
+      let serverQuerySucceeded = false;
+      try {
+        serverShift = await fetchCurrentShift();
+        serverQuerySucceeded = true; // ✅ Query succeeded (even if result is null)
+        if (serverShift) {
+          console.log(`✅ Server shift found: ${serverShift.id}`);
+          console.log(`   Status: ${serverShift.status}`);
+        } else {
+          console.log('ℹ️ No active shift on server (query succeeded)');
+        }
+      } catch (error) {
+        console.error('❌ Failed to fetch shift from server (network/API error):', error);
+        console.log('⚠️ Will trust cached data if available');
+        serverQuerySucceeded = false; // ❌ Query failed
+      }
+
+      // 🧠 SMART DECISION: Compare cache vs server
+      if (serverShift) {
+        // Server has a shift - this is the source of truth
+        if (cachedShift && cachedShift.id === serverShift.id) {
+          // Same shift - update cache with latest server data
+          console.log('✅ Smart Cache: Shift validated - updating with server data');
+          setActiveShift(serverShift);
+          await persistActiveShift(serverShift);
+        } else if (cachedShift && cachedShift.id !== serverShift.id) {
+          // Different shift - server has newer one
+          console.warn('⚠️ Smart Cache: Shift mismatch - server has different shift');
+          console.log(`   Cached: ${cachedShift.id} | Server: ${serverShift.id}`);
+          console.log('   Using server shift (source of truth)');
+          setActiveShift(serverShift);
+          await persistActiveShift(serverShift);
+        } else {
+          // No cached shift but server has one - restore it
+          console.log('✅ Smart Cache: No cached shift - restoring from server');
+          setActiveShift(serverShift);
+          await persistActiveShift(serverShift);
+        }
+        
+        // Notify system that shift is active
+        notifyShiftStarted();
+        
+        await startOrUpdateForegroundService({
+          status: "Available",
+          duration: "0m",
+          earnings: "$0.00",
+          trips: 0,
+        });
+      } else if (cachedShift) {
+        // No server shift but have cached one
+        // 🔥 CRITICAL FIX: Always use server timestamp for age calculation
+        // Don't trust lastShiftStartTime.current after app restart - it's reset
+        const shiftAgeFromServerTimestamp = Date.now() - new Date(cachedShift.startTime).getTime();
+        
+        // 🔥 CRITICAL: If server query FAILED (not just returned null), always trust cache
+        if (serverQuerySucceeded) {
+          // Server query succeeded but returned no shift - validate age
+          // Be lenient on app restart - server might be slow or network issue
+          // Use 2 hours for app load (plenty of time), vs 5 min for in-session refresh
+          const MAX_SHIFT_AGE_ON_APP_LOAD = 2 * 60 * 60 * 1000; // 2 hours
+          
+          console.log(`🔍 Smart Cache Debug: Shift age on app load`, {
+            cachedShiftId: cachedShift.id,
+            startTimeFromServer: cachedShift.startTime,
+            shiftAgeFromServerTimestamp: Math.floor(shiftAgeFromServerTimestamp / 1000) + 's',
+            shiftAgeMinutes: Math.floor(shiftAgeFromServerTimestamp / 1000 / 60) + 'min',
+            shiftAgeHours: Math.floor(shiftAgeFromServerTimestamp / 1000 / 60 / 60) + 'h',
+            maxAgeAllowed: Math.floor(MAX_SHIFT_AGE_ON_APP_LOAD / 1000 / 60) + 'min',
+            serverShiftFound: false,
+            serverQuerySucceeded: true,
+          });
+          
+          // 🧠 SMART LOGIC: Only clear cache if truly stale (>2 hours and not on server)
+          if (shiftAgeFromServerTimestamp > MAX_SHIFT_AGE_ON_APP_LOAD) {
+            // Cached shift is very old and server doesn't have it - was ended
+            console.warn(`⚠️ Smart Cache: Cached shift is ${Math.floor(shiftAgeFromServerTimestamp / 1000 / 60)}min (${Math.floor(shiftAgeFromServerTimestamp / 1000 / 60 / 60)}h) old and not on server`);
+            console.log('   Shift was likely ended by server - clearing cache');
+            await AsyncStorage.removeItem(STORAGE_KEYS.activeShift);
+            setActiveShift(null);
+          } else if (shiftAgeFromServerTimestamp < 0) {
+            // Invalid timestamp (future date) - corrupted data
+            console.error(`❌ Smart Cache: Invalid shift timestamp - clearing corrupted cache`);
+            await AsyncStorage.removeItem(STORAGE_KEYS.activeShift);
+            setActiveShift(null);
+          } else {
+            // Recent cached shift - trust it! Server might not have synced yet
+            console.log(`✅ Smart Cache: Shift is ${Math.floor(shiftAgeFromServerTimestamp / 1000 / 60)}min old - trusting cache`);
+            console.log('   Server will sync when available. Keeping shift active.');
+            setActiveShift(cachedShift);
+            notifyShiftStarted();
+            
+            // 🔥 CRITICAL: Update lastShiftStartTime for future refreshes
+            // Use server timestamp as source of truth
+            lastShiftStartTime.current = new Date(cachedShift.startTime).getTime();
+            console.log('📍 Restored shift start time tracking from server timestamp:', new Date(cachedShift.startTime).toLocaleString());
+            
+            // Try to restart foreground service
+            await startOrUpdateForegroundService({
+              status: "Available",
+              duration: "0m",
+              earnings: "$0.00",
+              trips: 0,
+            });
+          }
+        } else {
+          // Server query FAILED - always trust cache regardless of age
+          console.log(`✅ Smart Cache: Server query failed - trusting cached shift ${cachedShift.id}`);
+          console.log('   Network/API error - will validate when connection restored');
+          setActiveShift(cachedShift);
+          notifyShiftStarted();
+          
+          // 🔥 CRITICAL: Restore shift start time tracking
+          if (!lastShiftStartTime.current) {
+            lastShiftStartTime.current = new Date(cachedShift.startTime).getTime();
+            console.log('📍 Restored shift start time tracking from cache');
+          }
+          
+          // Try to restart foreground service
+          await startOrUpdateForegroundService({
+            status: "Available",
+            duration: "0m",
+            earnings: "$0.00",
+            trips: 0,
+          });
+        }
+      } else {
+        // No shift anywhere - clean state
+        console.log('ℹ️ Smart Cache: No shift found (cache or server) - clean state');
+        setActiveShift(null);
+      }
+
     } catch (error) {
       console.error("Failed to load persisted shift state", error);
     }
-  }, [persistActiveShift, driver?.firstName]);
+  }, [persistActiveShift, driver?.firstName, startOrUpdateForegroundService]);
 
   // ✅ FIXED: Only load persisted state when driver is authenticated
   // This prevents race condition where refreshCurrentShift overwrites persisted state
@@ -301,16 +510,6 @@ export const ShiftProvider: React.FC<{ children: React.ReactNode }> = ({
     }
   }, [persistVehicles]);
 
-  const selectVehicle = useCallback(async (vehicle: DriverVehicle) => {
-    setSelectedVehicle(vehicle);
-    await AsyncStorage.setItem(
-      STORAGE_KEYS.selectedVehicle,
-      JSON.stringify(vehicle)
-    );
-    setSelectedTariff(null);
-    await AsyncStorage.removeItem(STORAGE_KEYS.selectedTariff);
-  }, []);
-
   const clearSelection = useCallback(async () => {
     setSelectedVehicle(null);
     await AsyncStorage.removeItem(STORAGE_KEYS.selectedVehicle);
@@ -324,7 +523,11 @@ export const ShiftProvider: React.FC<{ children: React.ReactNode }> = ({
         setTariffsLoading(true);
         setTariffsError(null);
         
-        // Get company ID from driver (handle both companyId and company.id)
+        // 🚨 REMOVED: Vehicle tariff fetching - IT WAS CAUSING INFINITE LOOP
+        // The correct flow is: Company → Zone Selection → Zone Tariffs
+        // NOT: Vehicle → Vehicle Tariffs (this concept doesn't exist)
+        
+        // ✅ Fetch company tariffs - user will select zone later
         const driverCompanyId = driver?.companyId || driver?.company?.id;
         const targetCompanyId = companyId || driverCompanyId;
         
@@ -340,12 +543,12 @@ export const ShiftProvider: React.FC<{ children: React.ReactNode }> = ({
           return [];
         }
 
-        console.log(`🔄 Fetching tariffs for company: ${targetCompanyId}`);
+        console.log(`🔄 Fetching company tariffs: ${targetCompanyId}`);
         const fetched = await fetchCompanyTariffs(targetCompanyId);
         await persistTariffs(fetched);
 
         // Auto-select default if none selected
-        if (!selectedTariff) {
+        if (!selectedTariff && fetched.length > 0) {
           const defaultTariff = fetched.find((t) => t.isDefault) || fetched[0];
           if (defaultTariff) {
             setSelectedTariff(defaultTariff);
@@ -353,9 +556,11 @@ export const ShiftProvider: React.FC<{ children: React.ReactNode }> = ({
               STORAGE_KEYS.selectedTariff,
               JSON.stringify(defaultTariff)
             );
+            console.log(`✅ Auto-selected default tariff: ${defaultTariff.name}`);
           }
         }
 
+        console.log(`✅ Loaded ${fetched.length} company tariffs`);
         return fetched;
       } catch (error) {
         console.error("Failed to load tariffs", error);
@@ -370,12 +575,60 @@ export const ShiftProvider: React.FC<{ children: React.ReactNode }> = ({
     [persistTariffs, selectedTariff, driver?.companyId]
   );
 
+  const selectVehicle = useCallback(async (vehicle: DriverVehicle | null) => {
+    // Handle clearing vehicle selection
+    if (!vehicle) {
+      setSelectedVehicle(null);
+      await AsyncStorage.removeItem(STORAGE_KEYS.selectedVehicle);
+      console.log('🔄 Vehicle selection cleared');
+      return;
+    }
+    
+    setSelectedVehicle(vehicle);
+    await AsyncStorage.setItem(
+      STORAGE_KEYS.selectedVehicle,
+      JSON.stringify(vehicle)
+    );
+    
+    // ✅ CRITICAL: Sync vehicle selection to backend (DriverPreferences)
+    try {
+      console.log('🔄 Syncing vehicle selection to backend...');
+      await httpClient.put('/mobile/driver/preferences', {
+        vehicleId: vehicle.id,
+      });
+      console.log('✅ Vehicle selection synced to backend');
+    } catch (error) {
+      console.warn('⚠️ Failed to sync vehicle to backend:', error);
+      // Don't fail the selection if backend sync fails
+    }
+    
+    // ✅ CRITICAL: Clear tariff selection and force refresh from API
+    setSelectedTariff(null);
+    await AsyncStorage.removeItem(STORAGE_KEYS.selectedTariff);
+    
+    // ✅ Force refresh tariffs from API (not cache) when vehicle is selected
+    console.log('🔄 Vehicle selected - forcing tariff refresh from API');
+    await refreshTariffs();
+  }, [refreshTariffs]);
+
   const selectTariff = useCallback(async (tariff: Tariff) => {
     setSelectedTariff(tariff);
     await AsyncStorage.setItem(
       STORAGE_KEYS.selectedTariff,
       JSON.stringify(tariff)
     );
+    
+    // ✅ CRITICAL: Sync tariff selection to backend (DriverPreferences)
+    try {
+      console.log('🔄 Syncing tariff selection to backend...');
+      await httpClient.put('/mobile/driver/preferences', {
+        tariffId: tariff.id,
+      });
+      console.log('✅ Tariff selection synced to backend');
+    } catch (error) {
+      console.warn('⚠️ Failed to sync tariff to backend:', error);
+      // Don't fail the selection if backend sync fails
+    }
   }, []);
 
   const clearTariff = useCallback(async () => {
@@ -385,6 +638,8 @@ export const ShiftProvider: React.FC<{ children: React.ReactNode }> = ({
 
   // ✅ Lock to prevent multiple simultaneous refreshes
   const refreshingShift = useRef(false);
+  const lastShiftStartTime = useRef<number>(0); // Track when shift was started
+  const autoTariffRefreshInFlight = useRef(false);
   
   const refreshCurrentShift = useCallback(async () => {
     // ✅ CRITICAL FIX: Prevent race conditions from multiple simultaneous calls
@@ -396,51 +651,99 @@ export const ShiftProvider: React.FC<{ children: React.ReactNode }> = ({
     refreshingShift.current = true;
     
     try {
-      const shift = await fetchCurrentShift();
-      
-      // ✅ CRITICAL FIX: Don't overwrite persisted shift with null from server
-      // Server might not have shift cached, but AsyncStorage does
-      // Only update if we got a valid shift, or if there's no persisted shift
+      console.log('🔄 Smart Refresh: Validating shift with server...');
+      const serverShift = await fetchCurrentShift();
       const storedShift = await AsyncStorage.getItem(STORAGE_KEYS.activeShift);
       
-      if (shift) {
-        // Got shift from server - update everything
-        setActiveShift(shift);
-        await persistActiveShift(shift);
+      let cachedShift: ActiveShift | null = null;
+      let timeSinceShiftStart = 0;
+      
+      if (storedShift) {
+        try {
+          cachedShift = JSON.parse(storedShift);
+          if (cachedShift?.startTime) {
+            timeSinceShiftStart = Date.now() - new Date(cachedShift.startTime).getTime();
+          }
+        } catch (e) {
+          console.error('Failed to parse stored shift:', e);
+        }
+      }
+
+      // 🧠 SMART DECISION: Compare cache vs server
+      if (serverShift && cachedShift) {
+        if (serverShift.id === cachedShift.id) {
+          // Same shift - update cache with latest server data (earnings, trips, etc)
+          console.log(`✅ Smart Refresh: Shift ${serverShift.id} validated - updating stats`);
+          setActiveShift(serverShift);
+          await persistActiveShift(serverShift);
+          notifyShiftStarted();
+        } else {
+          // Different shifts - server has newer one
+          console.warn(`⚠️ Smart Refresh: Shift mismatch - server has different shift`);
+          console.log(`   Cached: ${cachedShift.id} | Server: ${serverShift.id}`);
+          console.log('   Syncing to server shift');
+          setActiveShift(serverShift);
+          await persistActiveShift(serverShift);
+          notifyShiftStarted();
+        }
+      } else if (serverShift && !cachedShift) {
+        // Server has shift but no cache - restore it
+        console.log(`✅ Smart Refresh: Restoring shift ${serverShift.id} from server`);
+        setActiveShift(serverShift);
+        await persistActiveShift(serverShift);
         notifyShiftStarted();
-        console.log("✅ Shift fetched from server and persisted:", shift.id);
-      } else if (!storedShift) {
-        // No shift from server AND no persisted shift - clear state
+      } else if (!serverShift && cachedShift) {
+        // No server shift but have cached one
+        // 🔥 CRITICAL FIX: Always use server timestamp for age calculation
+        // lastShiftStartTime.current can be stale/corrupted after app restart
+        const shiftAgeFromServerTimestamp = Date.now() - new Date(cachedShift.startTime).getTime();
+        
+        // Also check in-memory timestamp if available (for recently started shifts)
+        const timeSinceMemoryStart = lastShiftStartTime.current 
+          ? Date.now() - lastShiftStartTime.current 
+          : null;
+        
+        console.log(`🔍 Smart Refresh Debug: Shift age calculation`, {
+          cachedShiftId: cachedShift.id,
+          startTimeFromServer: cachedShift.startTime,
+          shiftAgeFromServerTimestamp: Math.floor(shiftAgeFromServerTimestamp / 1000) + 's (' + Math.floor(shiftAgeFromServerTimestamp / 1000 / 60) + 'min)',
+          lastShiftStartTime: lastShiftStartTime.current,
+          timeSinceMemoryStart: timeSinceMemoryStart ? Math.floor(timeSinceMemoryStart / 1000) + 's' : 'not available',
+          willUse: 'serverTimestamp (source of truth)',
+        });
+        
+        // 🧠 Use 5 minutes grace period for active session refreshes
+        const MAX_SHIFT_AGE_ACTIVE_SESSION = 5 * 60 * 1000; // 5 minutes
+        
+        if (shiftAgeFromServerTimestamp < MAX_SHIFT_AGE_ACTIVE_SESSION) {
+          // Less than 5 minutes old - keep it (server might still be syncing)
+          console.log(`⏳ Smart Refresh: Recent shift (${Math.floor(shiftAgeFromServerTimestamp / 1000)}s old) not on server yet - keeping cache`);
+          console.log('   This is normal for newly started shifts - server needs time to propagate');
+          // Don't change anything - keep cached shift
+        } else {
+          // Older than 5 minutes and not on server - was truly ended
+          console.warn(`⚠️ Smart Refresh: Cached shift (${Math.floor(shiftAgeFromServerTimestamp / 1000 / 60)}min old) not on server - was ended`);
+          console.log('   Clearing cache to match server');
+          setActiveShift(null);
+          await persistActiveShift(null);
+          notifyShiftEnded();
+          
+          Toast.show({
+            type: 'info',
+            text1: 'Shift Ended',
+            text2: 'Your shift was ended. Syncing app state.',
+            position: 'top',
+          });
+        }
+      } else {
+        // No shift anywhere - clean state
+        console.log('ℹ️ Smart Refresh: No active shift (cache or server)');
         setActiveShift(null);
         await persistActiveShift(null);
         notifyShiftEnded();
-        console.log("ℹ️ No shift on server or in storage - cleared state");
-      } else {
-        // ❌ SYNC ISSUE: Mobile has shift, server doesn't
-        console.warn("⚠️ SHIFT SYNC MISMATCH:");
-        console.warn(`   📱 Mobile cached shift: ${storedShift?.id} (status: ${storedShift?.status})`);
-        console.warn(`   🖥️  Server says: No active shift found`);
-        console.warn(`   🔍 Reason: Shift was ended on server, but mobile didn't get notification`);
-        console.warn(`   ✅ Fix: Syncing mobile to match server (server is source of truth)`);
-        
-        // ✅ FIX: Sync mobile state to match server
-        setActiveShift(null);
-        await persistActiveShift(null);
-        
-        // Stop location tracking since shift ended
-        console.log("🛑 Stopping location tracking (shift ended)");
-        
-        Toast.show({
-          type: 'info',
-          text1: 'Shift Ended',
-          text2: 'Your shift was ended. Syncing app state.',
-          position: 'top',
-        });
-        
-        console.log("✅ Mobile state synced - shift cleared to match server");
       }
     } catch (error) {
-      console.error("Failed to load current shift", error);
+      console.error("Failed to refresh current shift", error);
     } finally {
       refreshingShift.current = false;
     }
@@ -448,48 +751,130 @@ export const ShiftProvider: React.FC<{ children: React.ReactNode }> = ({
 
   const startShift = useCallback(
     async (payload: StartShiftPayload) => {
-      const response = await startDriverShift(payload);
-      setActiveShift(response.shift);
+      console.log('🚀 Starting shift with payload:', payload);
       
-      // ✅ NEW: Persist shift immediately when started
+      const response = await startDriverShift(payload);
+      
+      console.log('📦 Shift start response:', {
+        hasResponse: !!response,
+        hasShift: !!response.shift,
+        shiftId: response.shift?.id,
+        shiftStatus: response.shift?.status,
+        shiftStartTime: response.shift?.startTime,
+        hasActiveZones: response.activeZones && response.activeZones.length > 0,
+        zonesCount: response.activeZones?.length || 0,
+      });
+      
+      if (!response.shift?.id) {
+        console.error('❌ CRITICAL: Shift response missing ID!', response);
+        throw new Error('Invalid shift response - missing shift ID');
+      }
+      
+      setActiveShift(response.shift);
+      console.log('✅ activeShift state set:', {
+        id: response.shift.id,
+        status: response.shift.status,
+        startTime: response.shift.startTime,
+      });
+      
+      // 🔥 CRITICAL: Track when shift was started to prevent premature clearing
+      lastShiftStartTime.current = Date.now();
+      console.log('⏱️ Shift start time recorded:', new Date().toLocaleTimeString());
+      
+      // ✅ Persist shift immediately when started
       await persistActiveShift(response.shift);
+      console.log('💾 Shift persisted to AsyncStorage');
       
       // ✅ REMOVED: refreshCurrentShift() - we already have the shift from startDriverShift response
       // Calling refreshCurrentShift might overwrite if server doesn't return the shift immediately
 
       // Enable heartbeat when shift starts
       notifyShiftStarted();
+      console.log('💓 Heartbeat notifications enabled');
       
-      // 🔥 CRITICAL: Start foreground service to keep app alive
+      await startOrUpdateForegroundService({
+        status: "Available",
+        duration: "0m",
+        earnings: "$0.00",
+        trips: 0,
+      });
+
       try {
-        await ForegroundService.start({
-          driverName: driver?.firstName || 'Driver',
-          status: 'Available',
-          duration: '0h 0m',
-          earnings: '$0.00',
-          trips: 0,
-        });
-        console.log('✅ Foreground service started - app will stay alive!');
-        
-        // 💓 CRITICAL: Save driver data for native heartbeat
         await ForegroundService.saveDriverData(
           driver?.id || '',
-          response.shift.id, // ✅ FIX: Use response.shift, not shift
-          await AsyncStorage.getItem('authToken') || ''
+          response.shift.id,
+          (await AsyncStorage.getItem('authToken')) || ''
         );
         console.log('💓 Driver data saved for native heartbeat');
       } catch (error) {
-        console.error('❌ Failed to start foreground service:', error);
-        // Don't fail the shift start if foreground service fails
+        console.error('❌ Failed to save driver data for heartbeat:', error);
       }
+      
+      console.log('✅ Shift start complete - returning to caller');
     },
-    [persistActiveShift, driver?.firstName]
+    [persistActiveShift, driver?.firstName, driver?.id, startOrUpdateForegroundService]
   );
 
-  const endShift = useCallback(async () => {
+  useEffect(() => {
+    if (!driver?.companyId) {
+      return;
+    }
+    if (tariffsLoading) {
+      return;
+    }
+
+    const needsTariffs = tariffs.length === 0;
+    const missingSelection = !selectedTariff;
+
+    if (!needsTariffs && !missingSelection) {
+      return;
+    }
+
+    if (autoTariffRefreshInFlight.current) {
+      return;
+    }
+
+    autoTariffRefreshInFlight.current = true;
+    refreshTariffs(driver.companyId)
+      .catch((error) => {
+        console.warn("⚠️ Auto tariff refresh failed:", error);
+      })
+      .finally(() => {
+        autoTariffRefreshInFlight.current = false;
+      });
+  }, [
+    driver?.companyId,
+    tariffs.length,
+    selectedTariff?.id,
+    tariffsLoading,
+    refreshTariffs,
+  ]);
+
+  const endShift = useCallback(async (locationOverride?: { latitude: number; longitude: number; accuracy?: number; heading?: number; speed?: number } | null) => {
+    // 🔥 CRITICAL: Check if there's actually an active shift to end
+    // This prevents duplicate calls and "No active shift found" errors
+    if (!activeShift) {
+      console.log('⚠️ endShift called but no active shift exists - skipping');
+      return;
+    }
+    
+    console.log('🛑 endShift called for shift:', activeShift.id, 'with location:', locationOverride ? 'provided' : 'will use fallback');
+    
     try {
-      await endDriverShift();
+      await endDriverShift(locationOverride);
+      console.log('✅ Shift ended successfully on backend');
+    } catch (error: any) {
+      console.error('❌ Failed to end shift on backend:', error);
+      
+      // If the shift doesn't exist on backend (already ended), don't throw error
+      if (error?.response?.status === 400 && error?.response?.data?.message?.includes('No active shift')) {
+        console.log('⚠️ Shift already ended on backend, cleaning up local state');
+      } else {
+        // Re-throw other errors so they can be handled by the caller
+        throw error;
+      }
     } finally {
+      // Always clean up local state, even if backend call fails
       setActiveShift(null);
       
       // ✅ NEW: Clear persisted shift when ended
@@ -505,26 +890,35 @@ export const ShiftProvider: React.FC<{ children: React.ReactNode }> = ({
       try {
         await ForegroundService.stop();
         console.log('✅ Foreground service stopped');
-        
         // 💓 Clear driver data for heartbeat
         await ForegroundService.clearDriverData();
         console.log('💓 Driver data cleared');
       } catch (error) {
         console.error('❌ Failed to stop foreground service:', error);
         // Don't fail the shift end if foreground service stop fails
+      } finally {
+        foregroundServiceStartedRef.current = false;
       }
     }
-  }, [persistActiveShift]);
+  }, [persistActiveShift, activeShift]);
 
-  const refreshRideHistory = useCallback(async (limit = 3) => {
+  const refreshRecentJobs = useCallback(async (limit = 3) => {
     try {
-      setRideHistoryLoading(true);
-      const history = await fetchRideHistory(limit);
-      setRideHistory(history);
+      setRecentJobsLoading(true);
+      const jobs = await fetchRecentJobs(limit);
+      setRecentJobs(
+        jobs
+          .slice()
+          .sort((a, b) => {
+            const timeA = new Date(a.completedAt || a.createdAt || 0).getTime();
+            const timeB = new Date(b.completedAt || b.createdAt || 0).getTime();
+            return timeB - timeA;
+          })
+      );
     } catch (error) {
-      console.error("Failed to load ride history", error);
+      console.error("Failed to load recent jobs", error);
     } finally {
-      setRideHistoryLoading(false);
+      setRecentJobsLoading(false);
     }
   }, []);
 
@@ -536,7 +930,7 @@ export const ShiftProvider: React.FC<{ children: React.ReactNode }> = ({
     setTariffs([]);
     setTariffsError(null);
     setActiveShift(null);
-    setRideHistory([]);
+    setRecentJobs([]);
     await AsyncStorage.multiRemove([
       STORAGE_KEYS.selectedVehicle,
       STORAGE_KEYS.vehicles,
@@ -544,6 +938,60 @@ export const ShiftProvider: React.FC<{ children: React.ReactNode }> = ({
       STORAGE_KEYS.tariffs,
     ]);
   }, []);
+
+  const updateForegroundMetrics = useCallback(
+    async (shift: ActiveShift) => {
+      if (Platform.OS !== "android") {
+        return;
+      }
+
+      const statusLabel = formatShiftStatusLabel(shift.status);
+      const durationLabel = formatShiftDurationLabel(shift);
+      const earningsLabel = formatShiftEarnings(shift.stats?.totalEarnings);
+      const trips = getTripsCount(shift.stats?.totalRides);
+
+      await startOrUpdateForegroundService({
+        status: statusLabel,
+        duration: durationLabel,
+        earnings: earningsLabel,
+        trips,
+      });
+    },
+    [startOrUpdateForegroundService]
+  );
+
+  useEffect(() => {
+    if (Platform.OS !== "android") {
+      return;
+    }
+
+    if (!activeShift) {
+      if (notificationIntervalRef.current) {
+        clearInterval(notificationIntervalRef.current);
+        notificationIntervalRef.current = null;
+      }
+      return;
+    }
+
+    const pushUpdate = () => {
+      void updateForegroundMetrics(activeShift);
+    };
+
+    pushUpdate();
+
+    if (notificationIntervalRef.current) {
+      clearInterval(notificationIntervalRef.current);
+    }
+
+    notificationIntervalRef.current = setInterval(pushUpdate, 10 * 60 * 1000);
+
+    return () => {
+      if (notificationIntervalRef.current) {
+        clearInterval(notificationIntervalRef.current);
+        notificationIntervalRef.current = null;
+      }
+    };
+  }, [activeShift, updateForegroundMetrics]);
 
   // Fetch shift data only when driver is authenticated
   useEffect(() => {
@@ -554,8 +1002,8 @@ export const ShiftProvider: React.FC<{ children: React.ReactNode }> = ({
     // ✅ REMOVED refreshCurrentShift() call here - it's already called from loadPersistedState
     // This prevents race condition where two calls compete and overwrite each other
     
-    refreshRideHistory(3).catch((error) =>
-      console.error("Initial ride history fetch failed", error)
+    refreshRecentJobs(3).catch((error) =>
+      console.error("Initial recent jobs fetch failed", error)
     );
 
     // Register shift restoration callback for socket reconnections
@@ -639,7 +1087,7 @@ export const ShiftProvider: React.FC<{ children: React.ReactNode }> = ({
       unregisterDriverStateRestoration(handleDriverStateRestoration);
       console.log('🧹 ShiftContext: State restoration listener unregistered');
     };
-  }, [driver?.id, refreshRideHistory, persistActiveShift]); // ✅ Added persistActiveShift to deps
+  }, [driver?.id, refreshRecentJobs, persistActiveShift]); // ✅ Added persistActiveShift to deps
 
   const value = useMemo<ShiftContextValue>(
     () => ({
@@ -652,8 +1100,8 @@ export const ShiftProvider: React.FC<{ children: React.ReactNode }> = ({
       tariffsLoading,
       tariffsError,
       activeShift,
-      rideHistory,
-      rideHistoryLoading,
+      recentJobs,
+      recentJobsLoading,
       refreshVehicles,
       selectVehicle,
       clearSelection,
@@ -663,7 +1111,7 @@ export const ShiftProvider: React.FC<{ children: React.ReactNode }> = ({
       refreshCurrentShift,
       startShift,
       endShift,
-      refreshRideHistory,
+      refreshRecentJobs,
       resetShiftState,
     }),
     [
@@ -676,8 +1124,8 @@ export const ShiftProvider: React.FC<{ children: React.ReactNode }> = ({
       tariffsLoading,
       tariffsError,
       activeShift,
-      rideHistory,
-      rideHistoryLoading,
+      recentJobs,
+      recentJobsLoading,
       refreshVehicles,
       selectVehicle,
       clearSelection,
@@ -687,7 +1135,7 @@ export const ShiftProvider: React.FC<{ children: React.ReactNode }> = ({
       refreshCurrentShift,
       startShift,
       endShift,
-      refreshRideHistory,
+      refreshRecentJobs,
       resetShiftState,
     ]
   );

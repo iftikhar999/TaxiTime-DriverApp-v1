@@ -1,34 +1,83 @@
 import { io, Socket } from "socket.io-client";
 import { SOCKET_BASE_URL } from "../config/environment";
 import type { LocationUpdate } from "../native/locationService";
-import { offlineEventQueue } from "./offlineEventQueue";
+import { offlineEventQueue, QueuedEvent } from "./offlineEventQueue";
+
+/**
+ * ✅ UNIFIED INTERVAL CONTROL - DATABASE DRIVEN
+ * 
+ * All location-related intervals are controlled by CompanySettings database:
+ * 1. GPS detection interval → Native LocationTrackingService
+ * 2. Socket emission throttle → LOCATION_THROTTLE_MS (this file)
+ * 3. Map UI refresh → userLocationUpdateInterval (MapView)
+ * 4. Heartbeat interval → HEARTBEAT_INTERVAL_MS (socket keepalive)
+ * 
+ * Configuration flow:
+ * - Database: CompanySettings.locationUpdateInterval (e.g., 5 seconds)
+ * - Database: CompanySettings.heartbeatInterval (e.g., 5 seconds)
+ * - HomeScreen fetches → calls updateSocketIntervals()
+ * - Socket throttle = locationUpdateInterval (unified control)
+ * - Heartbeat = heartbeatInterval (if set) or locationUpdateInterval (fallback)
+ * 
+ * ⚠️ CRITICAL: Socket throttle MUST match GPS interval to avoid gaps!
+ */
 
 type DriverSocketConfig = {
   driverId: string;
   companyId?: string | null;
 };
 
-let LOCATION_THROTTLE_MS = 2000; // Default, will be updated dynamically
-let HEARTBEAT_INTERVAL_MS = 30000; // Default 30 seconds, will be updated dynamically
+type OutgoingEventType =
+  | "status"
+  | "location"
+  | "job_progress"
+  | "meter_telemetry"
+  | "meter_snapshot"
+  | "heartbeat";
+
+type SmartEmitOptions = {
+  ackEvent?: string;
+  errorEvent?: string;
+  timeoutMs?: number;
+};
+
+type OutgoingEvent = {
+  type: OutgoingEventType;
+  eventName: string;
+  payload: any;
+  ackEvent?: string;
+  errorEvent?: string;
+  timeoutMs?: number;
+  eventId?: string;
+};
+
+const DEFAULT_ACK_TIMEOUT_MS = 7000;
+
+let LOCATION_THROTTLE_MS = 5000; // Default 5s, updated from database via updateSocketIntervals()
+let HEARTBEAT_INTERVAL_MS = 30000; // Default 30s, updated from database via updateSocketIntervals()
 
 let socket: Socket | null = null;
 let currentDriver: DriverSocketConfig | null = null;
 let authenticated = false;
 let lastLocationSentAt = 0;
 let heartbeatInterval: ReturnType<typeof setInterval> | null = null;
+let lastHeartbeatSentAt = 0;
 let isOnline = false;
 let hasActiveShift = false; // Track if driver has active shift
 let reconnectAttempt = 0;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let maxReconnectDelay = 60000; // Max 60 seconds between retries
 let shiftRestorationCallback: (() => Promise<void>) | null = null;
+const generateEventId = () =>
+  `evt_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
 // Function to update location throttle interval dynamically
 export const updateLocationThrottleInterval = (intervalSeconds: number) => {
   const intervalMs = intervalSeconds * 1000;
+  const oldThrottle = LOCATION_THROTTLE_MS;
   LOCATION_THROTTLE_MS = intervalMs;
   console.log(
-    `🔄 Socket location throttle updated to ${intervalSeconds}s (${intervalMs}ms)`
+    `🔄 Socket location throttle CHANGED: ${oldThrottle / 1000}s → ${intervalSeconds}s (${intervalMs}ms)`
   );
 };
 
@@ -52,6 +101,12 @@ export const updateSocketIntervals = (
   locationIntervalSeconds: number,
   heartbeatIntervalSeconds?: number
 ) => {
+  console.log(`🔧 updateSocketIntervals CALLED:`, {
+    locationIntervalSeconds,
+    heartbeatIntervalSeconds,
+    currentThrottle: `${LOCATION_THROTTLE_MS / 1000}s`,
+  });
+  
   updateLocationThrottleInterval(locationIntervalSeconds);
 
   // If heartbeat interval is provided, use it; otherwise use a sensible multiple of location interval
@@ -59,6 +114,9 @@ export const updateSocketIntervals = (
     heartbeatIntervalSeconds ?? Math.max(locationIntervalSeconds * 6, 30);
   updateHeartbeatInterval(heartbeatSeconds);
 };
+
+// ✅ NEW: Get current throttle value for debugging
+export const getCurrentThrottleMs = () => LOCATION_THROTTLE_MS;
 
 /**
  * Calculate exponential backoff delay with jitter
@@ -180,8 +238,13 @@ export const ensureDriverSocket = (config: DriverSocketConfig): Socket => {
   if (socket) {
     if (!socket.connected) {
       socket.connect();
-    } else {
+    } else if (!authenticated) {
+      // ✅ FIX: Only authenticate if not already authenticated
+      // This prevents double authentication when useEffect re-runs
+      console.log("⚠️ Socket already connected but not authenticated - authenticating now");
       authenticateIfReady();
+    } else {
+      console.log("✅ Socket already connected and authenticated - skipping re-authentication");
     }
     return socket;
   }
@@ -215,13 +278,12 @@ export const ensureDriverSocket = (config: DriverSocketConfig): Socket => {
 
     // Process queued events after connection
     try {
-      const result = await offlineEventQueue.processQueue(
-        (eventName, payload) => {
-          if (socket) {
-            socket.emit(eventName, payload);
-          }
+      const result = await offlineEventQueue.processQueue(async (event: QueuedEvent) => {
+        if (!socket || !socket.connected) {
+          throw new Error("Socket not ready");
         }
-      );
+        await emitSocketEvent(event);
+      });
       console.log(`📤 Replayed ${result.success} queued events`);
     } catch (error) {
       console.error("Failed to process offline queue:", error);
@@ -371,31 +433,112 @@ export const getSocket = (): Socket | null => {
   return socket;
 };
 
+const isSocketReady = () => Boolean(socket && socket.connected && authenticated);
+
+const emitSocketEvent = async (event: OutgoingEvent): Promise<void> => {
+  if (!socket) {
+    throw new Error("Socket is not initialized");
+  }
+
+  const eventId = event.eventId ?? generateEventId();
+  const payload =
+    typeof event.payload === "object" && event.payload !== null
+      ? event.payload.eventId
+        ? event.payload
+        : { ...event.payload, eventId }
+      : { value: event.payload, eventId };
+
+  if (!event.ackEvent) {
+    socket.emit(event.eventName, payload);
+    return;
+  }
+
+  await new Promise<void>((resolve) => {
+    const timeoutMs = event.timeoutMs ?? DEFAULT_ACK_TIMEOUT_MS;
+    const ackEventName = event.ackEvent!;
+
+    let settled = false;
+
+    const cleanup = () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      socket.off(ackEventName, ackHandler);
+      if (event.errorEvent) {
+        socket.off(event.errorEvent, errorHandler);
+      }
+      clearTimeout(timeoutId);
+      resolve();
+    };
+
+    const ackHandler = (ackPayload: any) => {
+      if (ackPayload?.eventId && ackPayload.eventId !== eventId) {
+        return;
+      }
+      cleanup();
+    };
+
+    const errorHandler = (errorPayload: any) => {
+      if (errorPayload?.eventId && errorPayload.eventId !== eventId) {
+        return;
+      }
+      console.warn(
+        `[socket] Event error received for ${event.eventName}:`,
+        errorPayload
+      );
+      cleanup();
+    };
+
+    const timeoutId = setTimeout(() => {
+      console.warn(
+        `[socket] Ack timeout for ${event.eventName} (eventId=${eventId})`
+      );
+      cleanup();
+    }, timeoutMs);
+
+    socket.once(ackEventName, ackHandler);
+    if (event.errorEvent) {
+      socket.once(event.errorEvent, errorHandler);
+    }
+
+    socket.emit(event.eventName, payload);
+  });
+};
+
 /**
  * Smart emit - sends immediately if online, queues if offline
  */
 const smartEmit = async (
   eventName: string,
   payload: any,
-  eventType:
-    | "status"
-    | "location"
-    | "job_progress"
-    | "meter_telemetry"
-    | "heartbeat"
+  eventType: OutgoingEventType,
+  options: SmartEmitOptions = {}
 ) => {
-  if (socket && socket.connected && authenticated) {
-    // Online - emit immediately
-    socket.emit(eventName, payload);
-  } else {
-    // Offline - queue for later
-    await offlineEventQueue.enqueue({
-      type: eventType,
-      eventName,
-      payload,
-    });
-    console.log(`📥 Event queued (offline): ${eventName}`);
+  const event: OutgoingEvent = {
+    type: eventType,
+    eventName,
+    payload,
+    ...options,
+  };
+
+  if (isSocketReady()) {
+    try {
+      await emitSocketEvent(event);
+      return;
+    } catch (error) {
+      console.warn(
+        `[socket] Failed to emit ${eventName} immediately, queuing`,
+        error
+      );
+    }
   }
+
+  await offlineEventQueue.enqueue({
+    ...event,
+    eventId: event.eventId ?? generateEventId(),
+  });
+  console.log(`📥 Event queued (offline): ${eventName}`);
 };
 
 export const emitDriverLocation = (location: LocationUpdate, appState?: 'ACTIVE' | 'BACKGROUND' | 'INACTIVE') => {
@@ -418,11 +561,18 @@ export const emitDriverLocation = (location: LocationUpdate, appState?: 'ACTIVE'
 
   const now = Date.now();
   const timeSinceLastSend = now - lastLocationSentAt;
+  
+  // ✅ DIAGNOSTIC: Always log throttle check to debug gaps
+  console.log(`🔍 LOCATION THROTTLE CHECK:`, {
+    timeSinceLastSend: `${Math.round(timeSinceLastSend / 1000)}s`,
+    throttleLimit: `${LOCATION_THROTTLE_MS / 1000}s`,
+    willEmit: timeSinceLastSend >= LOCATION_THROTTLE_MS,
+    lastSentAt: new Date(lastLocationSentAt).toLocaleTimeString(),
+    currentTime: new Date(now).toLocaleTimeString(),
+  });
+  
   if (timeSinceLastSend < LOCATION_THROTTLE_MS) {
-    // Only log every 10th throttled attempt to avoid spam
-    if (Math.random() < 0.1) {
-      console.log(`⏱️ Location throttled (${Math.round(timeSinceLastSend / 1000)}s since last, need ${LOCATION_THROTTLE_MS / 1000}s)`);
-    }
+    console.log(`⏱️ Location THROTTLED - need ${Math.round((LOCATION_THROTTLE_MS - timeSinceLastSend) / 1000)}s more`);
     return;
   }
 
@@ -449,6 +599,7 @@ export const emitDriverLocation = (location: LocationUpdate, appState?: 'ACTIVE'
     lat: location.latitude?.toFixed(6),
     lng: location.longitude?.toFixed(6),
     appState,
+    throttleMs: LOCATION_THROTTLE_MS,
   });
   
   // ✨ NEW: Log when app is in background
@@ -513,10 +664,21 @@ export const emitDriverZoneStatus = (
   });
 };
 
-export const emitDriverStatus = (status: string, location?: LocationUpdate) => {
+export const emitDriverStatus = async (
+  status: string,
+  location?: LocationUpdate
+) => {
   if (!currentDriver) {
     return;
   }
+
+  console.log('🚦 [DriverSocket] Emitting driver status update', {
+    driverId: currentDriver.driverId,
+    companyId: currentDriver.companyId,
+    status,
+    hasLocation: !!location,
+    timestamp: new Date().toISOString(),
+  });
 
   const payload = {
     driverId: currentDriver.driverId,
@@ -537,7 +699,10 @@ export const emitDriverStatus = (status: string, location?: LocationUpdate) => {
     reason: "manual",
   };
 
-  smartEmit("driver:status:update", payload, "status");
+  return smartEmit("driver:status:update", payload, "status", {
+    ackEvent: "server:status:confirmed",
+    errorEvent: "server:status:error",
+  });
 };
 
 /**
@@ -545,11 +710,13 @@ export const emitDriverStatus = (status: string, location?: LocationUpdate) => {
  * @param jobId - The job/ride ID
  * @param status - Job status (ASSIGNED, ON_THE_WAY, ARRIVED, ACTIVE/STARTED, REACHED, COMPLETED, REJECTED, CANCELLED)
  * @param location - Optional current location
+ * @param extraData - Optional extra data (e.g., finalAmount, paymentMethod, completedAt)
  */
-export const emitJobProgress = (
+export const emitJobProgress = async (
   jobId: string,
   status: string,
-  location?: LocationUpdate
+  location?: LocationUpdate,
+  extraData?: Record<string, any>
 ) => {
   if (!currentDriver) {
     console.warn("Cannot emit job progress: driver not configured");
@@ -572,10 +739,14 @@ export const emitJobProgress = (
         }
       : undefined,
     timestamp: Date.now(),
+    ...extraData, // ✅ NEW: Include extra data like finalAmount, paymentMethod
   };
 
   console.log("📊 Emitting job:progress:update", payload);
-  smartEmit("job:progress:update", payload, "job_progress");
+  return smartEmit("job:progress:update", payload, "job_progress", {
+    ackEvent: "server:job:progress:confirmed",
+    errorEvent: "server:job:progress:error",
+  });
 };
 
 /**
@@ -626,6 +797,76 @@ export const emitMeterTelemetry = (
 };
 
 /**
+ * Emit persistent meter snapshot (stored on backend)
+ */
+export const emitMeterSnapshot = (
+  jobId: string,
+  telemetry: {
+    elapsedSeconds: number;
+    distanceMeters: number;
+    waitingSeconds?: number;
+    currentFare?: number;
+    speedKmh?: number;
+  },
+  location?: LocationUpdate,
+  extras?: {
+    status?: string | null;
+    isPaused?: boolean;
+    recordedAt?: number;
+    reason?: string;
+    routeSegment?: Array<{
+      latitude: number;
+      longitude: number;
+      timestamp?: number;
+    }>;
+  }
+) => {
+  if (!currentDriver) {
+    return;
+  }
+
+  const payload = {
+    driverId: currentDriver.driverId,
+    companyId: currentDriver.companyId ?? undefined,
+    jobId,
+    telemetry: {
+      elapsedSeconds: telemetry.elapsedSeconds,
+      distanceMeters: telemetry.distanceMeters,
+      waitingSeconds: telemetry.waitingSeconds ?? 0,
+      currentFare: telemetry.currentFare ?? 0,
+      speedKmh: telemetry.speedKmh ?? 0,
+    },
+    location: location
+      ? {
+          latitude: location.latitude,
+          longitude: location.longitude,
+          heading: location.heading ?? null,
+          speed: location.speed ?? null,
+          accuracy: location.accuracy ?? null,
+          timestamp: location.timestamp ?? Date.now(),
+        }
+      : undefined,
+    status: extras?.status ?? null,
+    isPaused: extras?.isPaused ?? false,
+    recordedAt: extras?.recordedAt ?? Date.now(),
+    reason: extras?.reason ?? "interval",
+    routeSegment:
+      extras?.routeSegment && extras.routeSegment.length > 0
+        ? extras.routeSegment
+        : undefined,
+  };
+
+  console.log("📡 Emitting meter:snapshot", {
+    jobId,
+    status: payload.status,
+    points: payload.routeSegment?.length ?? 0,
+    reason: payload.reason,
+  });
+
+  smartEmit("meter:snapshot", payload, "meter_snapshot");
+};
+
+/**
  * Start sending heartbeat to backend every 30s
  * Only sends heartbeats when driver has an active shift
  */
@@ -634,7 +875,9 @@ const startHeartbeat = () => {
     clearInterval(heartbeatInterval);
   }
 
-  heartbeatInterval = setInterval(() => {
+  const intervalMs = Math.max(HEARTBEAT_INTERVAL_MS || 0, 5000);
+
+  const sendHeartbeat = () => {
     if (
       socket &&
       currentDriver &&
@@ -642,29 +885,27 @@ const startHeartbeat = () => {
       socket.connected &&
       hasActiveShift
     ) {
+      lastHeartbeatSentAt = Date.now();
       socket.emit("driver:heartbeat", {
         driverId: currentDriver.driverId,
         companyId: currentDriver.companyId ?? undefined,
-        timestamp: Date.now(),
+        timestamp: lastHeartbeatSentAt,
       });
       console.log("💓 Heartbeat sent");
     }
-  }, HEARTBEAT_INTERVAL_MS);
+  };
 
-  // Send initial heartbeat immediately
-  if (
-    socket &&
-    currentDriver &&
-    authenticated &&
-    socket.connected &&
-    hasActiveShift
-  ) {
-    socket.emit("driver:heartbeat", {
-      driverId: currentDriver.driverId,
-      companyId: currentDriver.companyId ?? undefined,
-      timestamp: Date.now(),
-    });
-    console.log("💓 Initial heartbeat sent");
+  heartbeatInterval = setInterval(() => {
+    sendHeartbeat();
+  }, intervalMs);
+
+  const now = Date.now();
+  if (now - lastHeartbeatSentAt >= intervalMs) {
+    sendHeartbeat();
+  } else {
+    console.log(
+      "⏱️ Skipping immediate heartbeat (recently sent within interval)"
+    );
   }
 };
 

@@ -37,6 +37,15 @@ export interface ActiveShift {
 export interface ShiftStartResponse {
   shift: ActiveShift;
   driverStatus: string;
+  activeZones?: Array<{
+    id: string;
+    name: string;
+    type: string;
+    boundaries: any;
+    surgeMultiplier?: number;
+    isActive: boolean;
+  }>;
+  zonesRefreshedAt?: string;
 }
 
 export interface ShiftCurrentResponse {

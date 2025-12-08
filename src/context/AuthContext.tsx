@@ -13,6 +13,7 @@ import {
     registerDriver,
     RegisterPayload,
 } from "../services/authService";
+import { clearAllAppCache } from "../services/cacheCleanup";
 import { fetchDriverProfile } from "../services/driverService";
 import { DriverProfile } from "../types/driver";
 
@@ -132,21 +133,37 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
   };
 
   const handleLogout = async () => {
-    await logoutService();
-    setToken(null);
-    setDriver(null);
-    await AsyncStorage.multiRemove([
-      "authToken",
-      "driverProfile",
-      "shiftStarted",
-      "selectedVehicle",
-      "shiftStartTime",
-      "shiftCloseTime",
-      "driverVehicles",
-      "activeShift",         // ✅ NEW: Clear persisted shift
-      "selectedTariff",      // ✅ NEW: Clear tariff selection
-      "driverTariffs",       // ✅ NEW: Clear tariff list
-    ]);
+    console.log('🚪 Starting logout process - clearing all data...');
+    
+    try {
+      // ✅ 1. Call backend logout API
+      await logoutService();
+      
+      // ✅ 2. Clear React state
+      setToken(null);
+      setDriver(null);
+      
+      // ✅ 3. Clear ALL app cache (AsyncStorage, socket, foreground service, etc.)
+      await clearAllAppCache();
+      
+      console.log('✅ Logout complete - all data cleared');
+    } catch (error) {
+      console.error('❌ Logout error:', error);
+      
+      // ✅ Fallback: Clear React state even if cleanup fails
+      setToken(null);
+      setDriver(null);
+      
+      // Try to clear critical keys at minimum
+      try {
+        const allKeys = await AsyncStorage.getAllKeys();
+        if (allKeys.length > 0) {
+          await AsyncStorage.multiRemove(allKeys);
+        }
+      } catch (storageError) {
+        console.error('❌ AsyncStorage cleanup failed:', storageError);
+      }
+    }
   };
 
   const value = useMemo<AuthContextValue>(

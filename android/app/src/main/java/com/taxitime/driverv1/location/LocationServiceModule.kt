@@ -12,30 +12,31 @@ import com.facebook.react.bridge.ReactMethod
 import com.facebook.react.modules.core.DeviceEventManagerModule
 
 class LocationServiceModule(private val reactContext: ReactApplicationContext) :
-  ReactContextBaseJavaModule(reactContext) {
+        ReactContextBaseJavaModule(reactContext) {
 
   companion object {
     private var sharedContext: ReactApplicationContext? = null
 
     fun sendLocationUpdate(
-      latitude: Double,
-      longitude: Double,
-      accuracy: Float,
-      speed: Float,
-      heading: Float?
+            latitude: Double,
+            longitude: Double,
+            accuracy: Float,
+            speed: Float,
+            heading: Float?
     ) {
-      val params = com.facebook.react.bridge.Arguments.createMap().apply {
-        putDouble("latitude", latitude)
-        putDouble("longitude", longitude)
-        putDouble("accuracy", accuracy.toDouble())
-        putDouble("speed", speed.toDouble())
-        heading?.let { putDouble("heading", it.toDouble()) }
-        putDouble("timestamp", System.currentTimeMillis().toDouble())
-      }
+      val params =
+              com.facebook.react.bridge.Arguments.createMap().apply {
+                putDouble("latitude", latitude)
+                putDouble("longitude", longitude)
+                putDouble("accuracy", accuracy.toDouble())
+                putDouble("speed", speed.toDouble())
+                heading?.let { putDouble("heading", it.toDouble()) }
+                putDouble("timestamp", System.currentTimeMillis().toDouble())
+              }
 
       sharedContext
-        ?.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
-        ?.emit("DriverLocationUpdate", params)
+              ?.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
+              ?.emit("DriverLocationUpdate", params)
     }
   }
 
@@ -92,10 +93,11 @@ class LocationServiceModule(private val reactContext: ReactApplicationContext) :
       return
     }
 
-    val intent = Intent(
-      Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-      Uri.parse("package:${reactContext.packageName}")
-    )
+    val intent =
+            Intent(
+                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                    Uri.parse("package:${reactContext.packageName}")
+            )
     intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
     reactContext.startActivity(intent)
     promise.resolve(false)
@@ -108,16 +110,26 @@ class LocationServiceModule(private val reactContext: ReactApplicationContext) :
       val intent = Intent(reactContext, LocationTrackingService::class.java)
       intent.putExtra("ACTION", "UPDATE_INTERVAL")
       intent.putExtra("INTERVAL_SECONDS", intervalSeconds)
-      
+
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
         ContextCompat.startForegroundService(reactContext, intent)
       } else {
         reactContext.startService(intent)
       }
-      
+
       promise.resolve(null)
     } catch (error: Exception) {
       promise.reject("UPDATE_INTERVAL_ERROR", error)
     }
+  }
+
+  @ReactMethod
+  fun addListener(eventName: String) {
+    // Required for RN built-in Event Emitter Calls
+  }
+
+  @ReactMethod
+  fun removeListeners(count: Int) {
+    // Required for RN built-in Event Emitter Calls
   }
 }

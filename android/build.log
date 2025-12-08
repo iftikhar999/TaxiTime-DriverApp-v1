@@ -1,0 +1,979 @@
+Starting a Gradle Daemon (subsequent builds will be faster)
+> Task :gradle-plugin:settings-plugin:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :gradle-plugin:shared:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :gradle-plugin:shared:compileKotlin UP-TO-DATE
+> Task :gradle-plugin:shared:compileJava NO-SOURCE
+> Task :gradle-plugin:shared:processResources NO-SOURCE
+> Task :gradle-plugin:shared:classes UP-TO-DATE
+> Task :gradle-plugin:shared:jar UP-TO-DATE
+> Task :gradle-plugin:settings-plugin:compileKotlin UP-TO-DATE
+> Task :gradle-plugin:settings-plugin:compileJava NO-SOURCE
+> Task :gradle-plugin:settings-plugin:pluginDescriptors UP-TO-DATE
+> Task :gradle-plugin:settings-plugin:processResources UP-TO-DATE
+> Task :gradle-plugin:settings-plugin:classes UP-TO-DATE
+> Task :gradle-plugin:settings-plugin:jar UP-TO-DATE
+> Task :gradle-plugin:react-native-gradle-plugin:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :gradle-plugin:react-native-gradle-plugin:compileKotlin UP-TO-DATE
+> Task :gradle-plugin:react-native-gradle-plugin:compileJava NO-SOURCE
+> Task :gradle-plugin:react-native-gradle-plugin:pluginDescriptors UP-TO-DATE
+> Task :gradle-plugin:react-native-gradle-plugin:processResources UP-TO-DATE
+> Task :gradle-plugin:react-native-gradle-plugin:classes UP-TO-DATE
+> Task :gradle-plugin:react-native-gradle-plugin:jar UP-TO-DATE
+
+> Configure project :app
+Build was configured to prefer settings repositories over project repositories but repository 'maven' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'MavenRepo' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'Google' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'maven2' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'maven' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'MavenRepo' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'Google' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'maven2' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'maven' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'MavenRepo' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'Google' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'maven2' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'maven' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'MavenRepo' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'Google' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'maven2' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'maven' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'MavenRepo' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'Google' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'maven2' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'maven' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'MavenRepo' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'Google' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'maven2' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'maven' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'MavenRepo' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'Google' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'maven2' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'maven' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'MavenRepo' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'Google' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'maven2' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'maven' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'MavenRepo' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'Google' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'maven2' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'maven' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'MavenRepo' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'Google' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'maven2' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'maven' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'MavenRepo' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'Google' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'maven2' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'maven' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'MavenRepo' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'Google' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'maven2' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'maven' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'MavenRepo' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'Google' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'maven2' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'maven' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'MavenRepo' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'Google' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'maven2' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'maven' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'MavenRepo' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'Google' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'maven2' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'maven' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'MavenRepo' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'Google' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'maven2' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'maven' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'MavenRepo' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'Google' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'maven2' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'maven' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'MavenRepo' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'Google' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'maven2' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'maven' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'MavenRepo' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'Google' was added by plugin 'com.facebook.react'
+Build was configured to prefer settings repositories over project repositories but repository 'maven2' was added by plugin 'com.facebook.react'
+
+> Configure project :react-native-async-storage_async-storage
+Build was configured to prefer settings repositories over project repositories but repository 'maven3' was added by build file '../node_modules/@react-native-async-storage/async-storage/android/build.gradle'
+Build was configured to prefer settings repositories over project repositories but repository 'Google2' was added by build file '../node_modules/@react-native-async-storage/async-storage/android/build.gradle'
+Build was configured to prefer settings repositories over project repositories but repository 'MavenRepo2' was added by build file '../node_modules/@react-native-async-storage/async-storage/android/build.gradle'
+
+> Configure project :react-native-community_blur
+Build was configured to prefer settings repositories over project repositories but repository 'MavenRepo2' was added by build file '../node_modules/@react-native-community/blur/android/build.gradle'
+Build was configured to prefer settings repositories over project repositories but repository 'Google2' was added by build file '../node_modules/@react-native-community/blur/android/build.gradle'
+Build was configured to prefer settings repositories over project repositories but repository 'maven3' was added by build file '../node_modules/@react-native-community/blur/android/build.gradle'
+Build was configured to prefer settings repositories over project repositories but repository 'React Native sources' was added by build file '../node_modules/@react-native-community/blur/android/build.gradle'
+
+> Configure project :react-native-community_netinfo
+Build was configured to prefer settings repositories over project repositories but repository 'maven3' was added by build file '../node_modules/@react-native-community/netinfo/android/build.gradle'
+Build was configured to prefer settings repositories over project repositories but repository 'Google2' was added by build file '../node_modules/@react-native-community/netinfo/android/build.gradle'
+Build was configured to prefer settings repositories over project repositories but repository 'MavenLocal' was added by build file '../node_modules/@react-native-community/netinfo/android/build.gradle'
+Build was configured to prefer settings repositories over project repositories but repository 'MavenRepo2' was added by build file '../node_modules/@react-native-community/netinfo/android/build.gradle'
+
+> Configure project :react-native-firebase_app
+:react-native-firebase_app package.json found at /Applications/A_B_TAXI/mobile/driver-app-v1/node_modules/@react-native-firebase/app/package.json
+Build was configured to prefer settings repositories over project repositories but repository 'Google2' was added by build file '../node_modules/@react-native-firebase/app/android/build.gradle'
+Build was configured to prefer settings repositories over project repositories but repository 'MavenRepo2' was added by build file '../node_modules/@react-native-firebase/app/android/build.gradle'
+:react-native-firebase_app:firebase.bom using default value: 33.16.0
+:react-native-firebase_app:play.play-services-auth using default value: 21.3.0
+:react-native-firebase_app package.json found at /Applications/A_B_TAXI/mobile/driver-app-v1/node_modules/@react-native-firebase/app/package.json
+:react-native-firebase_app:version set from package.json: 22.4.0 (22,4,0 - 22004000)
+:react-native-firebase_app:android.compileSdk using custom value: 35
+:react-native-firebase_app:android.targetSdk using custom value: 35
+:react-native-firebase_app:android.minSdk using custom value: 24
+Build was configured to prefer settings repositories over project repositories but repository 'react-native-firebase_app -> React Native sources' was added by build file '../node_modules/@react-native-firebase/app/android/build.gradle'
+:react-native-firebase_app:reactNativeAndroidDir /Applications/A_B_TAXI/mobile/driver-app-v1/node_modules/react-native/android
+
+> Configure project :react-native-firebase_auth
+:react-native-firebase_auth package.json found at /Applications/A_B_TAXI/mobile/driver-app-v1/node_modules/@react-native-firebase/auth/package.json
+:react-native-firebase_app package.json found at /Applications/A_B_TAXI/mobile/driver-app-v1/node_modules/@react-native-firebase/app/package.json
+Build was configured to prefer settings repositories over project repositories but repository 'Google2' was added by build file '../node_modules/@react-native-firebase/auth/android/build.gradle'
+Build was configured to prefer settings repositories over project repositories but repository 'MavenRepo2' was added by build file '../node_modules/@react-native-firebase/auth/android/build.gradle'
+:react-native-firebase_auth:firebase.bom using default value: 33.16.0
+:react-native-firebase_auth package.json found at /Applications/A_B_TAXI/mobile/driver-app-v1/node_modules/@react-native-firebase/auth/package.json
+:react-native-firebase_auth:version set from package.json: 22.4.0 (22,4,0 - 22004000)
+:react-native-firebase_auth:android.compileSdk using custom value: 35
+:react-native-firebase_auth:android.targetSdk using custom value: 35
+:react-native-firebase_auth:android.minSdk using custom value: 24
+Build was configured to prefer settings repositories over project repositories but repository 'react-native-firebase_auth -> React Native sources' was added by build file '../node_modules/@react-native-firebase/auth/android/build.gradle'
+:react-native-firebase_auth:reactNativeAndroidDir /Applications/A_B_TAXI/mobile/driver-app-v1/node_modules/react-native/android
+
+> Configure project :react-native-firebase_database
+:react-native-firebase_database package.json found at /Applications/A_B_TAXI/mobile/driver-app-v1/node_modules/@react-native-firebase/database/package.json
+:react-native-firebase_app package.json found at /Applications/A_B_TAXI/mobile/driver-app-v1/node_modules/@react-native-firebase/app/package.json
+Build was configured to prefer settings repositories over project repositories but repository 'Google2' was added by build file '../node_modules/@react-native-firebase/database/android/build.gradle'
+Build was configured to prefer settings repositories over project repositories but repository 'MavenRepo2' was added by build file '../node_modules/@react-native-firebase/database/android/build.gradle'
+:react-native-firebase_database:firebase.bom using default value: 33.16.0
+:react-native-firebase_database package.json found at /Applications/A_B_TAXI/mobile/driver-app-v1/node_modules/@react-native-firebase/database/package.json
+:react-native-firebase_database:version set from package.json: 22.4.0 (22,4,0 - 22004000)
+:react-native-firebase_database:android.compileSdk using custom value: 35
+:react-native-firebase_database:android.targetSdk using custom value: 35
+:react-native-firebase_database:android.minSdk using custom value: 24
+Build was configured to prefer settings repositories over project repositories but repository 'react-native-firebase_database -> React Native sources' was added by build file '../node_modules/@react-native-firebase/database/android/build.gradle'
+:react-native-firebase_database:reactNativeAndroidDir /Applications/A_B_TAXI/mobile/driver-app-v1/node_modules/react-native/android
+
+> Configure project :react-native-gesture-handler
+Build was configured to prefer settings repositories over project repositories but repository 'MavenRepo2' was added by build file '../node_modules/react-native-gesture-handler/android/build.gradle'
+
+> Configure project :react-native-linear-gradient
+Build was configured to prefer settings repositories over project repositories but repository 'MavenLocal' was added by build file '../node_modules/react-native-linear-gradient/android/build.gradle'
+Build was configured to prefer settings repositories over project repositories but repository 'MavenRepo2' was added by build file '../node_modules/react-native-linear-gradient/android/build.gradle'
+Build was configured to prefer settings repositories over project repositories but repository 'maven3' was added by build file '../node_modules/react-native-linear-gradient/android/build.gradle'
+Build was configured to prefer settings repositories over project repositories but repository 'maven4' was added by build file '../node_modules/react-native-linear-gradient/android/build.gradle'
+Build was configured to prefer settings repositories over project repositories but repository 'Google2' was added by build file '../node_modules/react-native-linear-gradient/android/build.gradle'
+
+> Configure project :react-native-maps
+Build was configured to prefer settings repositories over project repositories but repository 'MavenLocal' was added by build file '../node_modules/react-native-maps/android/build.gradle'
+Build was configured to prefer settings repositories over project repositories but repository 'MavenRepo2' was added by build file '../node_modules/react-native-maps/android/build.gradle'
+Build was configured to prefer settings repositories over project repositories but repository 'maven3' was added by build file '../node_modules/react-native-maps/android/build.gradle'
+Build was configured to prefer settings repositories over project repositories but repository 'maven4' was added by build file '../node_modules/react-native-maps/android/build.gradle'
+Build was configured to prefer settings repositories over project repositories but repository 'Google2' was added by build file '../node_modules/react-native-maps/android/build.gradle'
+
+> Configure project :react-native-reanimated
+Android gradle plugin: 8.8.2
+Gradle: 8.13
+Build was configured to prefer settings repositories over project repositories but repository 'MavenRepo2' was added by build file '../node_modules/react-native-reanimated/android/build.gradle'
+Build was configured to prefer settings repositories over project repositories but repository 'MavenLocal' was added by build file '../node_modules/react-native-reanimated/android/build.gradle'
+Build was configured to prefer settings repositories over project repositories but repository 'maven3' was added by build file '../node_modules/react-native-reanimated/android/build.gradle'
+Build was configured to prefer settings repositories over project repositories but repository 'maven4' was added by build file '../node_modules/react-native-reanimated/android/build.gradle'
+Build was configured to prefer settings repositories over project repositories but repository 'Google2' was added by build file '../node_modules/react-native-reanimated/android/build.gradle'
+
+> Configure project :react-native-safe-area-context
+Build was configured to prefer settings repositories over project repositories but repository 'Google2' was added by build file '../node_modules/react-native-safe-area-context/android/build.gradle'
+Build was configured to prefer settings repositories over project repositories but repository 'maven3' was added by build file '../node_modules/react-native-safe-area-context/android/build.gradle'
+Build was configured to prefer settings repositories over project repositories but repository 'MavenRepo2' was added by build file '../node_modules/react-native-safe-area-context/android/build.gradle'
+
+> Configure project :react-native-screens
+Build was configured to prefer settings repositories over project repositories but repository 'maven3' was added by build file '../node_modules/react-native-screens/android/build.gradle'
+Build was configured to prefer settings repositories over project repositories but repository 'MavenRepo2' was added by build file '../node_modules/react-native-screens/android/build.gradle'
+Build was configured to prefer settings repositories over project repositories but repository 'MavenLocal' was added by build file '../node_modules/react-native-screens/android/build.gradle'
+Build was configured to prefer settings repositories over project repositories but repository 'Google2' was added by build file '../node_modules/react-native-screens/android/build.gradle'
+
+> Configure project :react-native-svg
+Build was configured to prefer settings repositories over project repositories but repository 'MavenRepo2' was added by build file '../node_modules/react-native-svg/android/build.gradle'
+Build was configured to prefer settings repositories over project repositories but repository 'MavenLocal' was added by build file '../node_modules/react-native-svg/android/build.gradle'
+Build was configured to prefer settings repositories over project repositories but repository 'Google2' was added by build file '../node_modules/react-native-svg/android/build.gradle'
+Build was configured to prefer settings repositories over project repositories but repository 'maven3' was added by build file '../node_modules/react-native-svg/android/build.gradle'
+
+> Configure project :react-native-vector-icons
+Build was configured to prefer settings repositories over project repositories but repository 'maven3' was added by build file '../node_modules/react-native-vector-icons/android/build.gradle'
+Build was configured to prefer settings repositories over project repositories but repository 'MavenRepo2' was added by build file '../node_modules/react-native-vector-icons/android/build.gradle'
+Build was configured to prefer settings repositories over project repositories but repository 'Google2' was added by build file '../node_modules/react-native-vector-icons/android/build.gradle'
+
+> Configure project :stripe_stripe-react-native
+Build was configured to prefer settings repositories over project repositories but repository 'MavenRepo2' was added by build file '../node_modules/@stripe/stripe-react-native/android/build.gradle'
+Build was configured to prefer settings repositories over project repositories but repository 'Google2' was added by build file '../node_modules/@stripe/stripe-react-native/android/build.gradle'
+Build was configured to prefer settings repositories over project repositories but repository 'React Native sources' was added by build file '../node_modules/@stripe/stripe-react-native/android/build.gradle'
+
+> Task :app:buildKotlinToolingMetadata UP-TO-DATE
+> Task :app:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :app:generateAutolinkingNewArchitectureFiles UP-TO-DATE
+> Task :app:generateAutolinkingPackageList UP-TO-DATE
+> Task :app:generateCodegenSchemaFromJavaScript SKIPPED
+> Task :app:generateCodegenArtifactsFromSchema SKIPPED
+> Task :app:preBuild UP-TO-DATE
+> Task :app:preReleaseBuild UP-TO-DATE
+> Task :app:generateReleaseBuildConfig UP-TO-DATE
+> Task :react-native-async-storage_async-storage:generateCodegenSchemaFromJavaScript UP-TO-DATE
+> Task :react-native-async-storage_async-storage:generateCodegenArtifactsFromSchema UP-TO-DATE
+> Task :react-native-async-storage_async-storage:preBuild UP-TO-DATE
+> Task :react-native-async-storage_async-storage:preReleaseBuild UP-TO-DATE
+> Task :react-native-async-storage_async-storage:writeReleaseAarMetadata UP-TO-DATE
+> Task :react-native-community_blur:generateCodegenSchemaFromJavaScript UP-TO-DATE
+> Task :react-native-community_blur:generateCodegenArtifactsFromSchema UP-TO-DATE
+> Task :react-native-community_blur:preBuild UP-TO-DATE
+> Task :react-native-community_blur:preReleaseBuild UP-TO-DATE
+> Task :react-native-community_blur:writeReleaseAarMetadata UP-TO-DATE
+> Task :react-native-community_netinfo:preBuild UP-TO-DATE
+> Task :react-native-community_netinfo:preReleaseBuild UP-TO-DATE
+> Task :react-native-community_netinfo:writeReleaseAarMetadata UP-TO-DATE
+> Task :react-native-firebase_app:preBuild UP-TO-DATE
+> Task :react-native-firebase_app:preReleaseBuild UP-TO-DATE
+> Task :react-native-firebase_app:writeReleaseAarMetadata UP-TO-DATE
+> Task :react-native-firebase_auth:preBuild UP-TO-DATE
+> Task :react-native-firebase_auth:preReleaseBuild UP-TO-DATE
+> Task :react-native-firebase_auth:writeReleaseAarMetadata UP-TO-DATE
+> Task :react-native-firebase_database:preBuild UP-TO-DATE
+> Task :react-native-firebase_database:preReleaseBuild UP-TO-DATE
+> Task :react-native-firebase_database:writeReleaseAarMetadata UP-TO-DATE
+> Task :react-native-gesture-handler:generateCodegenSchemaFromJavaScript UP-TO-DATE
+> Task :react-native-gesture-handler:generateCodegenArtifactsFromSchema UP-TO-DATE
+> Task :react-native-gesture-handler:preBuild UP-TO-DATE
+> Task :react-native-gesture-handler:preReleaseBuild UP-TO-DATE
+> Task :react-native-gesture-handler:writeReleaseAarMetadata UP-TO-DATE
+> Task :react-native-keep-awake:preBuild UP-TO-DATE
+> Task :react-native-keep-awake:preReleaseBuild UP-TO-DATE
+> Task :react-native-keep-awake:writeReleaseAarMetadata UP-TO-DATE
+> Task :react-native-linear-gradient:preBuild UP-TO-DATE
+> Task :react-native-linear-gradient:preReleaseBuild UP-TO-DATE
+> Task :react-native-linear-gradient:writeReleaseAarMetadata UP-TO-DATE
+> Task :react-native-maps:preBuild UP-TO-DATE
+> Task :react-native-maps:preReleaseBuild UP-TO-DATE
+> Task :react-native-maps:writeReleaseAarMetadata UP-TO-DATE
+> Task :react-native-reanimated:assertMinimalReactNativeVersionTask SKIPPED
+> Task :react-native-reanimated:generateCodegenSchemaFromJavaScript UP-TO-DATE
+> Task :react-native-reanimated:generateCodegenArtifactsFromSchema UP-TO-DATE
+> Task :react-native-reanimated:prepareReanimatedHeadersForPrefabs UP-TO-DATE
+> Task :react-native-reanimated:prepareWorkletsHeadersForPrefabs UP-TO-DATE
+> Task :react-native-reanimated:preBuild UP-TO-DATE
+> Task :react-native-reanimated:preReleaseBuild UP-TO-DATE
+> Task :react-native-reanimated:writeReleaseAarMetadata UP-TO-DATE
+> Task :react-native-safe-area-context:generateCodegenSchemaFromJavaScript UP-TO-DATE
+> Task :react-native-safe-area-context:generateCodegenArtifactsFromSchema UP-TO-DATE
+> Task :react-native-safe-area-context:preBuild UP-TO-DATE
+> Task :react-native-safe-area-context:preReleaseBuild UP-TO-DATE
+> Task :react-native-safe-area-context:writeReleaseAarMetadata UP-TO-DATE
+> Task :react-native-screens:generateCodegenSchemaFromJavaScript UP-TO-DATE
+> Task :react-native-screens:generateCodegenArtifactsFromSchema UP-TO-DATE
+> Task :react-native-screens:preBuild UP-TO-DATE
+> Task :react-native-screens:preReleaseBuild UP-TO-DATE
+> Task :react-native-screens:writeReleaseAarMetadata UP-TO-DATE
+> Task :react-native-svg:generateCodegenSchemaFromJavaScript UP-TO-DATE
+> Task :react-native-svg:generateCodegenArtifactsFromSchema UP-TO-DATE
+> Task :react-native-svg:preBuild UP-TO-DATE
+> Task :react-native-svg:preReleaseBuild UP-TO-DATE
+> Task :react-native-svg:writeReleaseAarMetadata UP-TO-DATE
+> Task :react-native-vector-icons:generateCodegenSchemaFromJavaScript UP-TO-DATE
+> Task :react-native-vector-icons:generateCodegenArtifactsFromSchema UP-TO-DATE
+> Task :react-native-vector-icons:preBuild UP-TO-DATE
+> Task :react-native-vector-icons:preReleaseBuild UP-TO-DATE
+> Task :react-native-vector-icons:writeReleaseAarMetadata UP-TO-DATE
+> Task :react-native-webrtc:preBuild UP-TO-DATE
+> Task :react-native-webrtc:preReleaseBuild UP-TO-DATE
+> Task :react-native-webrtc:writeReleaseAarMetadata UP-TO-DATE
+> Task :stripe_stripe-react-native:generateCodegenSchemaFromJavaScript UP-TO-DATE
+> Task :stripe_stripe-react-native:generateCodegenArtifactsFromSchema UP-TO-DATE
+> Task :stripe_stripe-react-native:preBuild UP-TO-DATE
+> Task :stripe_stripe-react-native:preReleaseBuild UP-TO-DATE
+> Task :stripe_stripe-react-native:writeReleaseAarMetadata UP-TO-DATE
+> Task :app:checkReleaseAarMetadata UP-TO-DATE
+> Task :app:createBundleReleaseJsAndAssets UP-TO-DATE
+> Task :app:generateReleaseResValues UP-TO-DATE
+> Task :react-native-async-storage_async-storage:generateReleaseResValues UP-TO-DATE
+> Task :react-native-async-storage_async-storage:generateReleaseResources UP-TO-DATE
+> Task :react-native-async-storage_async-storage:packageReleaseResources UP-TO-DATE
+> Task :react-native-community_blur:generateReleaseResValues UP-TO-DATE
+> Task :react-native-community_blur:generateReleaseResources UP-TO-DATE
+> Task :react-native-community_blur:packageReleaseResources UP-TO-DATE
+> Task :react-native-community_netinfo:generateReleaseResValues UP-TO-DATE
+> Task :react-native-community_netinfo:generateReleaseResources UP-TO-DATE
+> Task :react-native-community_netinfo:packageReleaseResources UP-TO-DATE
+> Task :react-native-firebase_app:generateReleaseResValues UP-TO-DATE
+> Task :react-native-firebase_app:generateReleaseResources UP-TO-DATE
+> Task :react-native-firebase_app:packageReleaseResources UP-TO-DATE
+> Task :react-native-firebase_auth:generateReleaseResValues UP-TO-DATE
+> Task :react-native-firebase_auth:generateReleaseResources UP-TO-DATE
+> Task :react-native-firebase_auth:packageReleaseResources UP-TO-DATE
+> Task :react-native-firebase_database:generateReleaseResValues UP-TO-DATE
+> Task :react-native-firebase_database:generateReleaseResources UP-TO-DATE
+> Task :react-native-firebase_database:packageReleaseResources UP-TO-DATE
+> Task :react-native-gesture-handler:generateReleaseResValues UP-TO-DATE
+> Task :react-native-gesture-handler:generateReleaseResources UP-TO-DATE
+> Task :react-native-gesture-handler:packageReleaseResources UP-TO-DATE
+> Task :react-native-keep-awake:generateReleaseResValues UP-TO-DATE
+> Task :react-native-keep-awake:generateReleaseResources UP-TO-DATE
+> Task :react-native-keep-awake:packageReleaseResources UP-TO-DATE
+> Task :react-native-linear-gradient:generateReleaseResValues UP-TO-DATE
+> Task :react-native-linear-gradient:generateReleaseResources UP-TO-DATE
+> Task :react-native-linear-gradient:packageReleaseResources UP-TO-DATE
+> Task :react-native-maps:generateReleaseResValues UP-TO-DATE
+> Task :react-native-maps:generateReleaseResources UP-TO-DATE
+> Task :react-native-maps:packageReleaseResources UP-TO-DATE
+> Task :react-native-reanimated:generateReleaseResValues UP-TO-DATE
+> Task :react-native-reanimated:generateReleaseResources UP-TO-DATE
+> Task :react-native-reanimated:packageReleaseResources UP-TO-DATE
+> Task :react-native-safe-area-context:generateReleaseResValues UP-TO-DATE
+> Task :react-native-safe-area-context:generateReleaseResources UP-TO-DATE
+> Task :react-native-safe-area-context:packageReleaseResources UP-TO-DATE
+> Task :react-native-screens:generateReleaseResValues UP-TO-DATE
+> Task :react-native-screens:generateReleaseResources UP-TO-DATE
+> Task :react-native-screens:packageReleaseResources UP-TO-DATE
+> Task :react-native-svg:generateReleaseResValues UP-TO-DATE
+> Task :react-native-svg:generateReleaseResources UP-TO-DATE
+> Task :react-native-svg:packageReleaseResources UP-TO-DATE
+> Task :react-native-vector-icons:generateReleaseResValues UP-TO-DATE
+> Task :react-native-vector-icons:generateReleaseResources UP-TO-DATE
+> Task :react-native-vector-icons:packageReleaseResources UP-TO-DATE
+> Task :react-native-webrtc:generateReleaseResValues UP-TO-DATE
+> Task :react-native-webrtc:generateReleaseResources UP-TO-DATE
+> Task :react-native-webrtc:packageReleaseResources UP-TO-DATE
+> Task :stripe_stripe-react-native:generateReleaseResValues UP-TO-DATE
+> Task :stripe_stripe-react-native:generateReleaseResources UP-TO-DATE
+> Task :stripe_stripe-react-native:packageReleaseResources UP-TO-DATE
+> Task :app:mapReleaseSourceSetPaths UP-TO-DATE
+> Task :app:generateReleaseResources UP-TO-DATE
+> Task :app:mergeReleaseResources UP-TO-DATE
+> Task :app:packageReleaseResources UP-TO-DATE
+> Task :app:parseReleaseLocalResources UP-TO-DATE
+> Task :app:createReleaseCompatibleScreenManifests UP-TO-DATE
+> Task :app:extractDeepLinksRelease UP-TO-DATE
+> Task :react-native-async-storage_async-storage:extractDeepLinksRelease UP-TO-DATE
+> Task :react-native-async-storage_async-storage:processReleaseManifest UP-TO-DATE
+> Task :react-native-community_blur:extractDeepLinksRelease UP-TO-DATE
+> Task :react-native-community_blur:processReleaseManifest UP-TO-DATE
+> Task :react-native-community_netinfo:extractDeepLinksRelease UP-TO-DATE
+> Task :react-native-community_netinfo:processReleaseManifest UP-TO-DATE
+> Task :react-native-firebase_app:extractDeepLinksRelease UP-TO-DATE
+> Task :react-native-firebase_app:processReleaseManifest UP-TO-DATE
+> Task :react-native-firebase_auth:extractDeepLinksRelease UP-TO-DATE
+> Task :react-native-firebase_auth:processReleaseManifest UP-TO-DATE
+> Task :react-native-firebase_database:extractDeepLinksRelease UP-TO-DATE
+> Task :react-native-firebase_database:processReleaseManifest UP-TO-DATE
+> Task :react-native-gesture-handler:extractDeepLinksRelease UP-TO-DATE
+> Task :react-native-gesture-handler:processReleaseManifest UP-TO-DATE
+> Task :react-native-keep-awake:extractDeepLinksRelease UP-TO-DATE
+> Task :react-native-keep-awake:processReleaseManifest UP-TO-DATE
+> Task :react-native-linear-gradient:extractDeepLinksRelease UP-TO-DATE
+> Task :react-native-linear-gradient:processReleaseManifest UP-TO-DATE
+> Task :react-native-maps:extractDeepLinksRelease UP-TO-DATE
+> Task :react-native-maps:processReleaseManifest UP-TO-DATE
+> Task :react-native-reanimated:extractDeepLinksRelease UP-TO-DATE
+> Task :react-native-reanimated:processReleaseManifest UP-TO-DATE
+> Task :react-native-safe-area-context:extractDeepLinksRelease UP-TO-DATE
+> Task :react-native-safe-area-context:processReleaseManifest UP-TO-DATE
+> Task :react-native-screens:extractDeepLinksRelease UP-TO-DATE
+> Task :react-native-screens:processReleaseManifest UP-TO-DATE
+> Task :react-native-svg:extractDeepLinksRelease UP-TO-DATE
+> Task :react-native-svg:processReleaseManifest UP-TO-DATE
+> Task :react-native-vector-icons:extractDeepLinksRelease UP-TO-DATE
+> Task :react-native-vector-icons:processReleaseManifest UP-TO-DATE
+> Task :react-native-webrtc:extractDeepLinksRelease UP-TO-DATE
+> Task :react-native-webrtc:processReleaseManifest UP-TO-DATE
+> Task :stripe_stripe-react-native:extractDeepLinksRelease UP-TO-DATE
+> Task :stripe_stripe-react-native:processReleaseManifest UP-TO-DATE
+> Task :app:processReleaseMainManifest UP-TO-DATE
+> Task :app:processReleaseManifest UP-TO-DATE
+> Task :app:processReleaseManifestForPackage UP-TO-DATE
+> Task :react-native-async-storage_async-storage:compileReleaseLibraryResources UP-TO-DATE
+> Task :react-native-async-storage_async-storage:parseReleaseLocalResources UP-TO-DATE
+> Task :react-native-async-storage_async-storage:generateReleaseRFile UP-TO-DATE
+> Task :react-native-community_blur:compileReleaseLibraryResources UP-TO-DATE
+> Task :react-native-community_blur:parseReleaseLocalResources UP-TO-DATE
+> Task :react-native-community_blur:generateReleaseRFile UP-TO-DATE
+> Task :react-native-community_netinfo:compileReleaseLibraryResources UP-TO-DATE
+> Task :react-native-community_netinfo:parseReleaseLocalResources UP-TO-DATE
+> Task :react-native-community_netinfo:generateReleaseRFile UP-TO-DATE
+> Task :react-native-firebase_app:compileReleaseLibraryResources UP-TO-DATE
+> Task :react-native-firebase_app:parseReleaseLocalResources UP-TO-DATE
+> Task :react-native-firebase_app:generateReleaseRFile UP-TO-DATE
+> Task :react-native-firebase_auth:compileReleaseLibraryResources UP-TO-DATE
+> Task :react-native-firebase_auth:parseReleaseLocalResources UP-TO-DATE
+> Task :react-native-firebase_auth:generateReleaseRFile UP-TO-DATE
+> Task :react-native-firebase_database:compileReleaseLibraryResources UP-TO-DATE
+> Task :react-native-firebase_database:parseReleaseLocalResources UP-TO-DATE
+> Task :react-native-firebase_database:generateReleaseRFile UP-TO-DATE
+> Task :react-native-gesture-handler:compileReleaseLibraryResources UP-TO-DATE
+> Task :react-native-gesture-handler:parseReleaseLocalResources UP-TO-DATE
+> Task :react-native-gesture-handler:generateReleaseRFile UP-TO-DATE
+> Task :react-native-keep-awake:compileReleaseLibraryResources UP-TO-DATE
+> Task :react-native-keep-awake:parseReleaseLocalResources UP-TO-DATE
+> Task :react-native-keep-awake:generateReleaseRFile UP-TO-DATE
+> Task :react-native-linear-gradient:compileReleaseLibraryResources UP-TO-DATE
+> Task :react-native-linear-gradient:parseReleaseLocalResources UP-TO-DATE
+> Task :react-native-linear-gradient:generateReleaseRFile UP-TO-DATE
+> Task :react-native-maps:compileReleaseLibraryResources UP-TO-DATE
+> Task :react-native-maps:parseReleaseLocalResources UP-TO-DATE
+> Task :react-native-maps:generateReleaseRFile UP-TO-DATE
+> Task :react-native-reanimated:compileReleaseLibraryResources UP-TO-DATE
+> Task :react-native-reanimated:parseReleaseLocalResources UP-TO-DATE
+> Task :react-native-reanimated:generateReleaseRFile UP-TO-DATE
+> Task :react-native-safe-area-context:compileReleaseLibraryResources UP-TO-DATE
+> Task :react-native-safe-area-context:parseReleaseLocalResources UP-TO-DATE
+> Task :react-native-safe-area-context:generateReleaseRFile UP-TO-DATE
+> Task :react-native-screens:compileReleaseLibraryResources UP-TO-DATE
+> Task :react-native-screens:parseReleaseLocalResources UP-TO-DATE
+> Task :react-native-screens:generateReleaseRFile UP-TO-DATE
+> Task :react-native-svg:compileReleaseLibraryResources UP-TO-DATE
+> Task :react-native-svg:parseReleaseLocalResources UP-TO-DATE
+> Task :react-native-svg:generateReleaseRFile UP-TO-DATE
+> Task :react-native-vector-icons:compileReleaseLibraryResources UP-TO-DATE
+> Task :react-native-vector-icons:parseReleaseLocalResources UP-TO-DATE
+> Task :react-native-vector-icons:generateReleaseRFile UP-TO-DATE
+> Task :react-native-webrtc:compileReleaseLibraryResources UP-TO-DATE
+> Task :react-native-webrtc:parseReleaseLocalResources UP-TO-DATE
+> Task :react-native-webrtc:generateReleaseRFile UP-TO-DATE
+> Task :stripe_stripe-react-native:compileReleaseLibraryResources UP-TO-DATE
+> Task :stripe_stripe-react-native:parseReleaseLocalResources UP-TO-DATE
+> Task :stripe_stripe-react-native:generateReleaseRFile UP-TO-DATE
+> Task :app:processReleaseResources UP-TO-DATE
+> Task :react-native-async-storage_async-storage:generateReleaseBuildConfig UP-TO-DATE
+> Task :react-native-async-storage_async-storage:javaPreCompileRelease UP-TO-DATE
+> Task :react-native-async-storage_async-storage:compileReleaseJavaWithJavac UP-TO-DATE
+> Task :react-native-async-storage_async-storage:bundleLibCompileToJarRelease UP-TO-DATE
+> Task :react-native-community_blur:generateReleaseBuildConfig UP-TO-DATE
+> Task :react-native-community_blur:javaPreCompileRelease UP-TO-DATE
+> Task :react-native-community_blur:compileReleaseJavaWithJavac UP-TO-DATE
+> Task :react-native-community_blur:bundleLibCompileToJarRelease UP-TO-DATE
+> Task :react-native-community_netinfo:generateReleaseBuildConfig UP-TO-DATE
+> Task :react-native-community_netinfo:javaPreCompileRelease UP-TO-DATE
+> Task :react-native-community_netinfo:compileReleaseJavaWithJavac UP-TO-DATE
+> Task :react-native-community_netinfo:bundleLibCompileToJarRelease UP-TO-DATE
+> Task :react-native-firebase_app:generateReleaseBuildConfig UP-TO-DATE
+> Task :react-native-firebase_app:javaPreCompileRelease UP-TO-DATE
+> Task :react-native-firebase_app:compileReleaseJavaWithJavac UP-TO-DATE
+> Task :react-native-firebase_app:bundleLibCompileToJarRelease UP-TO-DATE
+> Task :react-native-firebase_auth:generateReleaseBuildConfig UP-TO-DATE
+> Task :react-native-firebase_auth:javaPreCompileRelease UP-TO-DATE
+> Task :react-native-firebase_auth:compileReleaseJavaWithJavac UP-TO-DATE
+> Task :react-native-firebase_auth:bundleLibCompileToJarRelease UP-TO-DATE
+> Task :react-native-firebase_database:generateReleaseBuildConfig UP-TO-DATE
+> Task :react-native-firebase_database:javaPreCompileRelease UP-TO-DATE
+> Task :react-native-firebase_database:compileReleaseJavaWithJavac UP-TO-DATE
+> Task :react-native-firebase_database:bundleLibCompileToJarRelease UP-TO-DATE
+> Task :react-native-gesture-handler:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :react-native-gesture-handler:generateReleaseBuildConfig UP-TO-DATE
+> Task :react-native-reanimated:generateReleaseBuildConfig UP-TO-DATE
+> Task :react-native-reanimated:javaPreCompileRelease UP-TO-DATE
+> Task :react-native-reanimated:packageNdkLibs NO-SOURCE
+> Task :react-native-reanimated:compileReleaseJavaWithJavac UP-TO-DATE
+> Task :react-native-reanimated:bundleLibCompileToJarRelease UP-TO-DATE
+> Task :react-native-svg:generateReleaseBuildConfig UP-TO-DATE
+> Task :react-native-svg:javaPreCompileRelease UP-TO-DATE
+> Task :react-native-svg:compileReleaseJavaWithJavac UP-TO-DATE
+> Task :react-native-svg:bundleLibCompileToJarRelease UP-TO-DATE
+> Task :react-native-gesture-handler:compileReleaseKotlin UP-TO-DATE
+> Task :react-native-gesture-handler:javaPreCompileRelease UP-TO-DATE
+> Task :react-native-gesture-handler:compileReleaseJavaWithJavac UP-TO-DATE
+> Task :react-native-gesture-handler:bundleLibCompileToJarRelease UP-TO-DATE
+> Task :react-native-keep-awake:generateReleaseBuildConfig UP-TO-DATE
+> Task :react-native-keep-awake:javaPreCompileRelease UP-TO-DATE
+> Task :react-native-keep-awake:compileReleaseJavaWithJavac UP-TO-DATE
+> Task :react-native-keep-awake:bundleLibCompileToJarRelease UP-TO-DATE
+> Task :react-native-linear-gradient:generateReleaseBuildConfig UP-TO-DATE
+> Task :react-native-linear-gradient:javaPreCompileRelease UP-TO-DATE
+> Task :react-native-linear-gradient:compileReleaseJavaWithJavac UP-TO-DATE
+> Task :react-native-linear-gradient:bundleLibCompileToJarRelease UP-TO-DATE
+> Task :react-native-maps:generateReleaseBuildConfig UP-TO-DATE
+> Task :react-native-maps:javaPreCompileRelease UP-TO-DATE
+> Task :react-native-maps:compileReleaseJavaWithJavac UP-TO-DATE
+> Task :react-native-maps:bundleLibCompileToJarRelease UP-TO-DATE
+> Task :react-native-safe-area-context:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :react-native-safe-area-context:generateReleaseBuildConfig UP-TO-DATE
+> Task :react-native-safe-area-context:compileReleaseKotlin UP-TO-DATE
+> Task :react-native-safe-area-context:javaPreCompileRelease UP-TO-DATE
+> Task :react-native-safe-area-context:compileReleaseJavaWithJavac UP-TO-DATE
+> Task :react-native-safe-area-context:bundleLibCompileToJarRelease UP-TO-DATE
+> Task :react-native-screens:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :react-native-screens:generateReleaseBuildConfig UP-TO-DATE
+> Task :react-native-screens:compileReleaseKotlin UP-TO-DATE
+> Task :react-native-screens:javaPreCompileRelease UP-TO-DATE
+> Task :react-native-screens:compileReleaseJavaWithJavac UP-TO-DATE
+> Task :react-native-screens:bundleLibCompileToJarRelease UP-TO-DATE
+> Task :react-native-vector-icons:generateReleaseBuildConfig UP-TO-DATE
+> Task :react-native-vector-icons:javaPreCompileRelease UP-TO-DATE
+> Task :react-native-vector-icons:compileReleaseJavaWithJavac UP-TO-DATE
+> Task :react-native-vector-icons:bundleLibCompileToJarRelease UP-TO-DATE
+> Task :react-native-webrtc:generateReleaseBuildConfig UP-TO-DATE
+> Task :react-native-webrtc:javaPreCompileRelease UP-TO-DATE
+> Task :react-native-webrtc:compileReleaseJavaWithJavac UP-TO-DATE
+> Task :react-native-webrtc:bundleLibCompileToJarRelease UP-TO-DATE
+> Task :stripe_stripe-react-native:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :stripe_stripe-react-native:dataBindingMergeDependencyArtifactsRelease UP-TO-DATE
+> Task :stripe_stripe-react-native:dataBindingGenBaseClassesRelease UP-TO-DATE
+> Task :stripe_stripe-react-native:generateReleaseBuildConfig UP-TO-DATE
+> Task :stripe_stripe-react-native:compileReleaseKotlin UP-TO-DATE
+> Task :stripe_stripe-react-native:javaPreCompileRelease UP-TO-DATE
+> Task :stripe_stripe-react-native:compileReleaseJavaWithJavac UP-TO-DATE
+> Task :stripe_stripe-react-native:bundleLibCompileToJarRelease UP-TO-DATE
+> Task :app:compileReleaseKotlin UP-TO-DATE
+> Task :app:javaPreCompileRelease UP-TO-DATE
+> Task :app:compileReleaseJavaWithJavac UP-TO-DATE
+> Task :app:copyReactNativeVectorIconFonts UP-TO-DATE
+> Task :app:extractProguardFiles UP-TO-DATE
+> Task :react-native-async-storage_async-storage:bundleLibRuntimeToJarRelease UP-TO-DATE
+> Task :react-native-async-storage_async-storage:processReleaseJavaRes NO-SOURCE
+> Task :react-native-async-storage_async-storage:createFullJarRelease UP-TO-DATE
+> Task :react-native-async-storage_async-storage:extractProguardFiles UP-TO-DATE
+> Task :react-native-async-storage_async-storage:generateReleaseLintModel UP-TO-DATE
+> Task :react-native-async-storage_async-storage:prepareLintJarForPublish UP-TO-DATE
+> Task :react-native-community_blur:bundleLibRuntimeToJarRelease UP-TO-DATE
+> Task :react-native-community_blur:processReleaseJavaRes NO-SOURCE
+> Task :react-native-community_blur:createFullJarRelease UP-TO-DATE
+> Task :react-native-community_blur:extractProguardFiles UP-TO-DATE
+> Task :react-native-community_blur:generateReleaseLintModel UP-TO-DATE
+> Task :react-native-community_blur:prepareLintJarForPublish UP-TO-DATE
+> Task :react-native-community_netinfo:bundleLibRuntimeToJarRelease UP-TO-DATE
+> Task :react-native-community_netinfo:processReleaseJavaRes NO-SOURCE
+> Task :react-native-community_netinfo:createFullJarRelease UP-TO-DATE
+> Task :react-native-community_netinfo:extractProguardFiles UP-TO-DATE
+> Task :react-native-community_netinfo:generateReleaseLintModel UP-TO-DATE
+> Task :react-native-community_netinfo:prepareLintJarForPublish UP-TO-DATE
+> Task :react-native-firebase_app:bundleLibRuntimeToJarRelease UP-TO-DATE
+> Task :react-native-firebase_app:processReleaseJavaRes NO-SOURCE
+> Task :react-native-firebase_app:createFullJarRelease UP-TO-DATE
+> Task :react-native-firebase_app:extractProguardFiles UP-TO-DATE
+> Task :react-native-firebase_app:generateReleaseLintModel UP-TO-DATE
+> Task :react-native-firebase_app:prepareLintJarForPublish UP-TO-DATE
+> Task :react-native-firebase_auth:bundleLibRuntimeToJarRelease UP-TO-DATE
+> Task :react-native-firebase_auth:processReleaseJavaRes NO-SOURCE
+> Task :react-native-firebase_auth:createFullJarRelease UP-TO-DATE
+> Task :react-native-firebase_auth:extractProguardFiles UP-TO-DATE
+> Task :react-native-firebase_auth:generateReleaseLintModel UP-TO-DATE
+> Task :react-native-firebase_auth:prepareLintJarForPublish UP-TO-DATE
+> Task :react-native-firebase_database:bundleLibRuntimeToJarRelease UP-TO-DATE
+> Task :react-native-firebase_database:processReleaseJavaRes NO-SOURCE
+> Task :react-native-firebase_database:createFullJarRelease UP-TO-DATE
+> Task :react-native-firebase_database:extractProguardFiles UP-TO-DATE
+> Task :react-native-firebase_database:generateReleaseLintModel UP-TO-DATE
+> Task :react-native-firebase_database:prepareLintJarForPublish UP-TO-DATE
+> Task :react-native-gesture-handler:bundleLibRuntimeToJarRelease UP-TO-DATE
+> Task :react-native-gesture-handler:processReleaseJavaRes UP-TO-DATE
+> Task :react-native-gesture-handler:createFullJarRelease UP-TO-DATE
+> Task :react-native-gesture-handler:extractProguardFiles UP-TO-DATE
+> Task :react-native-reanimated:bundleLibRuntimeToJarRelease UP-TO-DATE
+> Task :react-native-reanimated:processReleaseJavaRes NO-SOURCE
+> Task :react-native-reanimated:createFullJarRelease UP-TO-DATE
+> Task :react-native-reanimated:extractProguardFiles UP-TO-DATE
+> Task :react-native-reanimated:generateReleaseLintModel UP-TO-DATE
+> Task :react-native-reanimated:prepareLintJarForPublish UP-TO-DATE
+> Task :react-native-svg:bundleLibRuntimeToJarRelease UP-TO-DATE
+> Task :react-native-svg:processReleaseJavaRes NO-SOURCE
+> Task :react-native-svg:createFullJarRelease UP-TO-DATE
+> Task :react-native-svg:extractProguardFiles UP-TO-DATE
+> Task :react-native-svg:generateReleaseLintModel UP-TO-DATE
+> Task :react-native-svg:prepareLintJarForPublish UP-TO-DATE
+> Task :react-native-gesture-handler:generateReleaseLintModel UP-TO-DATE
+> Task :react-native-gesture-handler:prepareLintJarForPublish UP-TO-DATE
+> Task :react-native-keep-awake:bundleLibRuntimeToJarRelease UP-TO-DATE
+> Task :react-native-keep-awake:processReleaseJavaRes NO-SOURCE
+> Task :react-native-keep-awake:createFullJarRelease UP-TO-DATE
+> Task :react-native-keep-awake:extractProguardFiles UP-TO-DATE
+> Task :react-native-keep-awake:generateReleaseLintModel UP-TO-DATE
+> Task :react-native-keep-awake:prepareLintJarForPublish UP-TO-DATE
+> Task :react-native-linear-gradient:bundleLibRuntimeToJarRelease UP-TO-DATE
+> Task :react-native-linear-gradient:processReleaseJavaRes NO-SOURCE
+> Task :react-native-linear-gradient:createFullJarRelease UP-TO-DATE
+> Task :react-native-linear-gradient:extractProguardFiles UP-TO-DATE
+> Task :react-native-linear-gradient:generateReleaseLintModel UP-TO-DATE
+> Task :react-native-linear-gradient:prepareLintJarForPublish UP-TO-DATE
+> Task :react-native-maps:bundleLibRuntimeToJarRelease UP-TO-DATE
+> Task :react-native-maps:processReleaseJavaRes NO-SOURCE
+> Task :react-native-maps:createFullJarRelease UP-TO-DATE
+> Task :react-native-maps:extractProguardFiles UP-TO-DATE
+> Task :react-native-maps:generateReleaseLintModel UP-TO-DATE
+> Task :react-native-maps:prepareLintJarForPublish UP-TO-DATE
+> Task :react-native-safe-area-context:bundleLibRuntimeToJarRelease UP-TO-DATE
+> Task :react-native-safe-area-context:processReleaseJavaRes UP-TO-DATE
+> Task :react-native-safe-area-context:createFullJarRelease UP-TO-DATE
+> Task :react-native-safe-area-context:extractProguardFiles UP-TO-DATE
+> Task :react-native-safe-area-context:generateReleaseLintModel UP-TO-DATE
+> Task :react-native-safe-area-context:prepareLintJarForPublish UP-TO-DATE
+> Task :react-native-screens:bundleLibRuntimeToJarRelease UP-TO-DATE
+> Task :react-native-screens:processReleaseJavaRes UP-TO-DATE
+> Task :react-native-screens:createFullJarRelease UP-TO-DATE
+> Task :react-native-screens:extractProguardFiles UP-TO-DATE
+> Task :react-native-screens:generateReleaseLintModel UP-TO-DATE
+> Task :react-native-screens:prepareLintJarForPublish UP-TO-DATE
+> Task :react-native-vector-icons:bundleLibRuntimeToJarRelease UP-TO-DATE
+> Task :react-native-vector-icons:processReleaseJavaRes NO-SOURCE
+> Task :react-native-vector-icons:createFullJarRelease UP-TO-DATE
+> Task :react-native-vector-icons:extractProguardFiles UP-TO-DATE
+> Task :react-native-vector-icons:generateReleaseLintModel UP-TO-DATE
+> Task :react-native-vector-icons:prepareLintJarForPublish UP-TO-DATE
+> Task :react-native-webrtc:bundleLibRuntimeToJarRelease UP-TO-DATE
+> Task :react-native-webrtc:processReleaseJavaRes NO-SOURCE
+> Task :react-native-webrtc:createFullJarRelease UP-TO-DATE
+> Task :react-native-webrtc:extractProguardFiles UP-TO-DATE
+> Task :react-native-webrtc:generateReleaseLintModel UP-TO-DATE
+> Task :react-native-webrtc:prepareLintJarForPublish UP-TO-DATE
+> Task :stripe_stripe-react-native:bundleLibRuntimeToJarRelease UP-TO-DATE
+> Task :stripe_stripe-react-native:processReleaseJavaRes UP-TO-DATE
+> Task :stripe_stripe-react-native:createFullJarRelease UP-TO-DATE
+> Task :stripe_stripe-react-native:extractProguardFiles UP-TO-DATE
+> Task :stripe_stripe-react-native:generateReleaseLintModel UP-TO-DATE
+> Task :stripe_stripe-react-native:prepareLintJarForPublish UP-TO-DATE
+> Task :app:generateReleaseLintVitalReportModel UP-TO-DATE
+> Task :stripe_stripe-react-native:mergeReleaseJniLibFolders UP-TO-DATE
+> Task :stripe_stripe-react-native:mergeReleaseNativeLibs NO-SOURCE
+> Task :stripe_stripe-react-native:stripReleaseDebugSymbols NO-SOURCE
+> Task :stripe_stripe-react-native:copyReleaseJniLibsProjectAndLocalJars UP-TO-DATE
+> Task :stripe_stripe-react-native:extractDeepLinksForAarRelease UP-TO-DATE
+> Task :stripe_stripe-react-native:extractReleaseAnnotations UP-TO-DATE
+> Task :stripe_stripe-react-native:mergeReleaseGeneratedProguardFiles UP-TO-DATE
+> Task :stripe_stripe-react-native:mergeReleaseConsumerProguardFiles UP-TO-DATE
+> Task :stripe_stripe-react-native:mergeReleaseShaders UP-TO-DATE
+> Task :stripe_stripe-react-native:compileReleaseShaders NO-SOURCE
+> Task :stripe_stripe-react-native:generateReleaseAssets UP-TO-DATE
+> Task :stripe_stripe-react-native:packageReleaseAssets UP-TO-DATE
+> Task :stripe_stripe-react-native:prepareReleaseArtProfile UP-TO-DATE
+> Task :stripe_stripe-react-native:mergeReleaseJavaResource UP-TO-DATE
+> Task :stripe_stripe-react-native:syncReleaseLibJars UP-TO-DATE
+> Task :stripe_stripe-react-native:bundleReleaseLocalLintAar UP-TO-DATE
+> Task :react-native-reanimated:configureCMakeRelWithDebInfo[arm64-v8a]
+> Task :react-native-reanimated:configureCMakeRelWithDebInfo[armeabi-v7a]
+> Task :react-native-reanimated:configureCMakeRelWithDebInfo[x86]
+> Task :react-native-reanimated:configureCMakeRelWithDebInfo[x86_64]
+> Task :react-native-reanimated:generateJsonModelRelease
+> Task :react-native-reanimated:prefabReleaseConfigurePackage UP-TO-DATE
+> Task :react-native-gesture-handler:configureCMakeRelWithDebInfo[arm64-v8a]
+> Task :react-native-reanimated:buildCMakeRelWithDebInfo[arm64-v8a][reanimated,worklets]
+> Task :react-native-reanimated:buildCMakeRelWithDebInfo[armeabi-v7a][reanimated,worklets]
+> Task :react-native-reanimated:buildCMakeRelWithDebInfo[x86][reanimated,worklets]
+> Task :react-native-reanimated:buildCMakeRelWithDebInfo[x86_64][reanimated,worklets]
+> Task :react-native-reanimated:externalNativeBuildRelease
+> Task :react-native-reanimated:prefabReleasePackage UP-TO-DATE
+> Task :react-native-gesture-handler:buildCMakeRelWithDebInfo[arm64-v8a]
+> Task :react-native-gesture-handler:configureCMakeRelWithDebInfo[armeabi-v7a]
+> Task :react-native-gesture-handler:buildCMakeRelWithDebInfo[armeabi-v7a]
+> Task :react-native-gesture-handler:configureCMakeRelWithDebInfo[x86]
+> Task :react-native-gesture-handler:buildCMakeRelWithDebInfo[x86]
+> Task :react-native-gesture-handler:configureCMakeRelWithDebInfo[x86_64]
+> Task :react-native-gesture-handler:buildCMakeRelWithDebInfo[x86_64]
+> Task :react-native-gesture-handler:mergeReleaseJniLibFolders UP-TO-DATE
+> Task :react-native-gesture-handler:mergeReleaseNativeLibs UP-TO-DATE
+> Task :react-native-gesture-handler:stripReleaseDebugSymbols UP-TO-DATE
+> Task :react-native-gesture-handler:copyReleaseJniLibsProjectAndLocalJars UP-TO-DATE
+> Task :react-native-gesture-handler:extractDeepLinksForAarRelease UP-TO-DATE
+> Task :react-native-gesture-handler:extractReleaseAnnotations UP-TO-DATE
+> Task :react-native-gesture-handler:mergeReleaseGeneratedProguardFiles UP-TO-DATE
+> Task :react-native-gesture-handler:mergeReleaseConsumerProguardFiles UP-TO-DATE
+> Task :react-native-gesture-handler:mergeReleaseShaders UP-TO-DATE
+> Task :react-native-gesture-handler:compileReleaseShaders NO-SOURCE
+> Task :react-native-gesture-handler:generateReleaseAssets UP-TO-DATE
+> Task :react-native-gesture-handler:packageReleaseAssets UP-TO-DATE
+> Task :react-native-gesture-handler:prepareReleaseArtProfile UP-TO-DATE
+> Task :react-native-gesture-handler:mergeReleaseJavaResource UP-TO-DATE
+> Task :react-native-gesture-handler:syncReleaseLibJars UP-TO-DATE
+> Task :react-native-gesture-handler:bundleReleaseLocalLintAar UP-TO-DATE
+> Task :react-native-safe-area-context:mergeReleaseJniLibFolders UP-TO-DATE
+> Task :react-native-safe-area-context:mergeReleaseNativeLibs NO-SOURCE
+> Task :react-native-safe-area-context:stripReleaseDebugSymbols NO-SOURCE
+> Task :react-native-safe-area-context:copyReleaseJniLibsProjectAndLocalJars UP-TO-DATE
+> Task :react-native-safe-area-context:extractDeepLinksForAarRelease UP-TO-DATE
+> Task :react-native-safe-area-context:extractReleaseAnnotations UP-TO-DATE
+> Task :react-native-safe-area-context:mergeReleaseGeneratedProguardFiles UP-TO-DATE
+> Task :react-native-safe-area-context:mergeReleaseConsumerProguardFiles UP-TO-DATE
+> Task :react-native-safe-area-context:mergeReleaseShaders UP-TO-DATE
+> Task :react-native-safe-area-context:compileReleaseShaders NO-SOURCE
+> Task :react-native-safe-area-context:generateReleaseAssets UP-TO-DATE
+> Task :react-native-safe-area-context:packageReleaseAssets UP-TO-DATE
+> Task :react-native-safe-area-context:prepareReleaseArtProfile UP-TO-DATE
+> Task :react-native-safe-area-context:mergeReleaseJavaResource UP-TO-DATE
+> Task :react-native-safe-area-context:syncReleaseLibJars UP-TO-DATE
+> Task :react-native-safe-area-context:bundleReleaseLocalLintAar UP-TO-DATE
+> Task :react-native-screens:configureCMakeRelWithDebInfo[arm64-v8a]
+> Task :react-native-screens:buildCMakeRelWithDebInfo[arm64-v8a]
+> Task :react-native-screens:configureCMakeRelWithDebInfo[armeabi-v7a]
+> Task :react-native-screens:buildCMakeRelWithDebInfo[armeabi-v7a]
+> Task :react-native-screens:configureCMakeRelWithDebInfo[x86]
+> Task :react-native-screens:buildCMakeRelWithDebInfo[x86]
+> Task :react-native-screens:configureCMakeRelWithDebInfo[x86_64]
+> Task :react-native-screens:buildCMakeRelWithDebInfo[x86_64]
+> Task :react-native-screens:mergeReleaseJniLibFolders UP-TO-DATE
+> Task :react-native-screens:mergeReleaseNativeLibs UP-TO-DATE
+> Task :react-native-screens:stripReleaseDebugSymbols UP-TO-DATE
+> Task :react-native-screens:copyReleaseJniLibsProjectAndLocalJars UP-TO-DATE
+> Task :react-native-screens:extractDeepLinksForAarRelease UP-TO-DATE
+> Task :react-native-screens:extractReleaseAnnotations UP-TO-DATE
+> Task :react-native-screens:mergeReleaseGeneratedProguardFiles UP-TO-DATE
+> Task :react-native-screens:mergeReleaseConsumerProguardFiles UP-TO-DATE
+> Task :react-native-screens:mergeReleaseShaders UP-TO-DATE
+> Task :react-native-screens:compileReleaseShaders NO-SOURCE
+> Task :react-native-screens:generateReleaseAssets UP-TO-DATE
+> Task :react-native-screens:packageReleaseAssets UP-TO-DATE
+> Task :react-native-screens:prepareReleaseArtProfile UP-TO-DATE
+> Task :react-native-screens:mergeReleaseJavaResource UP-TO-DATE
+> Task :react-native-screens:syncReleaseLibJars UP-TO-DATE
+> Task :react-native-screens:bundleReleaseLocalLintAar UP-TO-DATE
+> Task :react-native-async-storage_async-storage:mergeReleaseJniLibFolders UP-TO-DATE
+> Task :react-native-async-storage_async-storage:mergeReleaseNativeLibs NO-SOURCE
+> Task :react-native-async-storage_async-storage:stripReleaseDebugSymbols NO-SOURCE
+> Task :react-native-async-storage_async-storage:copyReleaseJniLibsProjectAndLocalJars UP-TO-DATE
+> Task :react-native-async-storage_async-storage:extractDeepLinksForAarRelease UP-TO-DATE
+> Task :react-native-async-storage_async-storage:extractReleaseAnnotations UP-TO-DATE
+> Task :react-native-async-storage_async-storage:mergeReleaseGeneratedProguardFiles UP-TO-DATE
+> Task :react-native-async-storage_async-storage:mergeReleaseConsumerProguardFiles UP-TO-DATE
+> Task :react-native-async-storage_async-storage:mergeReleaseShaders UP-TO-DATE
+> Task :react-native-async-storage_async-storage:compileReleaseShaders NO-SOURCE
+> Task :react-native-async-storage_async-storage:generateReleaseAssets UP-TO-DATE
+> Task :react-native-async-storage_async-storage:packageReleaseAssets UP-TO-DATE
+> Task :react-native-async-storage_async-storage:prepareReleaseArtProfile UP-TO-DATE
+> Task :react-native-async-storage_async-storage:mergeReleaseJavaResource UP-TO-DATE
+> Task :react-native-async-storage_async-storage:syncReleaseLibJars UP-TO-DATE
+> Task :react-native-async-storage_async-storage:bundleReleaseLocalLintAar UP-TO-DATE
+> Task :react-native-community_blur:mergeReleaseJniLibFolders UP-TO-DATE
+> Task :react-native-community_blur:mergeReleaseNativeLibs NO-SOURCE
+> Task :react-native-community_blur:stripReleaseDebugSymbols NO-SOURCE
+> Task :react-native-community_blur:copyReleaseJniLibsProjectAndLocalJars UP-TO-DATE
+> Task :react-native-community_blur:extractDeepLinksForAarRelease UP-TO-DATE
+> Task :react-native-community_blur:extractReleaseAnnotations UP-TO-DATE
+> Task :react-native-community_blur:mergeReleaseGeneratedProguardFiles UP-TO-DATE
+> Task :react-native-community_blur:mergeReleaseConsumerProguardFiles UP-TO-DATE
+> Task :react-native-community_blur:mergeReleaseShaders UP-TO-DATE
+> Task :react-native-community_blur:compileReleaseShaders NO-SOURCE
+> Task :react-native-community_blur:generateReleaseAssets UP-TO-DATE
+> Task :react-native-community_blur:packageReleaseAssets UP-TO-DATE
+> Task :react-native-community_blur:prepareReleaseArtProfile UP-TO-DATE
+> Task :react-native-community_blur:mergeReleaseJavaResource UP-TO-DATE
+> Task :react-native-community_blur:syncReleaseLibJars UP-TO-DATE
+> Task :react-native-community_blur:bundleReleaseLocalLintAar UP-TO-DATE
+> Task :react-native-community_netinfo:mergeReleaseJniLibFolders UP-TO-DATE
+> Task :react-native-community_netinfo:mergeReleaseNativeLibs NO-SOURCE
+> Task :react-native-community_netinfo:stripReleaseDebugSymbols NO-SOURCE
+> Task :react-native-community_netinfo:copyReleaseJniLibsProjectAndLocalJars UP-TO-DATE
+> Task :react-native-community_netinfo:extractDeepLinksForAarRelease UP-TO-DATE
+> Task :react-native-community_netinfo:extractReleaseAnnotations UP-TO-DATE
+> Task :react-native-community_netinfo:mergeReleaseGeneratedProguardFiles UP-TO-DATE
+> Task :react-native-community_netinfo:mergeReleaseConsumerProguardFiles UP-TO-DATE
+> Task :react-native-community_netinfo:mergeReleaseShaders UP-TO-DATE
+> Task :react-native-community_netinfo:compileReleaseShaders NO-SOURCE
+> Task :react-native-community_netinfo:generateReleaseAssets UP-TO-DATE
+> Task :react-native-community_netinfo:packageReleaseAssets UP-TO-DATE
+> Task :react-native-community_netinfo:prepareReleaseArtProfile UP-TO-DATE
+> Task :react-native-community_netinfo:mergeReleaseJavaResource UP-TO-DATE
+> Task :react-native-community_netinfo:syncReleaseLibJars UP-TO-DATE
+> Task :react-native-community_netinfo:bundleReleaseLocalLintAar UP-TO-DATE
+> Task :react-native-firebase_auth:mergeReleaseJniLibFolders UP-TO-DATE
+> Task :react-native-firebase_auth:mergeReleaseNativeLibs NO-SOURCE
+> Task :react-native-firebase_auth:stripReleaseDebugSymbols NO-SOURCE
+> Task :react-native-firebase_auth:copyReleaseJniLibsProjectAndLocalJars UP-TO-DATE
+> Task :react-native-firebase_auth:extractDeepLinksForAarRelease UP-TO-DATE
+> Task :react-native-firebase_auth:extractReleaseAnnotations UP-TO-DATE
+> Task :react-native-firebase_auth:mergeReleaseGeneratedProguardFiles UP-TO-DATE
+> Task :react-native-firebase_auth:mergeReleaseConsumerProguardFiles UP-TO-DATE
+> Task :react-native-firebase_auth:mergeReleaseShaders UP-TO-DATE
+> Task :react-native-firebase_auth:compileReleaseShaders NO-SOURCE
+> Task :react-native-firebase_auth:generateReleaseAssets UP-TO-DATE
+> Task :react-native-firebase_auth:packageReleaseAssets UP-TO-DATE
+> Task :react-native-firebase_auth:prepareReleaseArtProfile UP-TO-DATE
+> Task :react-native-firebase_auth:mergeReleaseJavaResource UP-TO-DATE
+> Task :react-native-firebase_auth:syncReleaseLibJars UP-TO-DATE
+> Task :react-native-firebase_auth:bundleReleaseLocalLintAar UP-TO-DATE
+> Task :react-native-firebase_database:mergeReleaseJniLibFolders UP-TO-DATE
+> Task :react-native-firebase_database:mergeReleaseNativeLibs NO-SOURCE
+> Task :react-native-firebase_database:stripReleaseDebugSymbols NO-SOURCE
+> Task :react-native-firebase_database:copyReleaseJniLibsProjectAndLocalJars UP-TO-DATE
+> Task :react-native-firebase_database:extractDeepLinksForAarRelease UP-TO-DATE
+> Task :react-native-firebase_database:extractReleaseAnnotations UP-TO-DATE
+> Task :react-native-firebase_database:mergeReleaseGeneratedProguardFiles UP-TO-DATE
+> Task :react-native-firebase_database:mergeReleaseConsumerProguardFiles UP-TO-DATE
+> Task :react-native-firebase_database:mergeReleaseShaders UP-TO-DATE
+> Task :react-native-firebase_database:compileReleaseShaders NO-SOURCE
+> Task :react-native-firebase_database:generateReleaseAssets UP-TO-DATE
+> Task :react-native-firebase_database:packageReleaseAssets UP-TO-DATE
+> Task :react-native-firebase_database:prepareReleaseArtProfile UP-TO-DATE
+> Task :react-native-firebase_database:mergeReleaseJavaResource UP-TO-DATE
+> Task :react-native-firebase_database:syncReleaseLibJars UP-TO-DATE
+> Task :react-native-firebase_database:bundleReleaseLocalLintAar UP-TO-DATE
+> Task :react-native-firebase_app:mergeReleaseJniLibFolders UP-TO-DATE
+> Task :react-native-firebase_app:mergeReleaseNativeLibs NO-SOURCE
+> Task :react-native-firebase_app:stripReleaseDebugSymbols NO-SOURCE
+> Task :react-native-firebase_app:copyReleaseJniLibsProjectAndLocalJars UP-TO-DATE
+> Task :react-native-firebase_app:extractDeepLinksForAarRelease UP-TO-DATE
+> Task :react-native-firebase_app:extractReleaseAnnotations UP-TO-DATE
+> Task :react-native-firebase_app:mergeReleaseGeneratedProguardFiles UP-TO-DATE
+> Task :react-native-firebase_app:mergeReleaseConsumerProguardFiles UP-TO-DATE
+> Task :react-native-firebase_app:mergeReleaseShaders UP-TO-DATE
+> Task :react-native-firebase_app:compileReleaseShaders NO-SOURCE
+> Task :react-native-firebase_app:generateReleaseAssets UP-TO-DATE
+> Task :react-native-firebase_app:packageReleaseAssets UP-TO-DATE
+> Task :react-native-firebase_app:prepareReleaseArtProfile UP-TO-DATE
+> Task :react-native-firebase_app:mergeReleaseJavaResource UP-TO-DATE
+> Task :react-native-firebase_app:syncReleaseLibJars UP-TO-DATE
+> Task :react-native-firebase_app:bundleReleaseLocalLintAar UP-TO-DATE
+> Task :react-native-keep-awake:mergeReleaseJniLibFolders UP-TO-DATE
+> Task :react-native-keep-awake:mergeReleaseNativeLibs NO-SOURCE
+> Task :react-native-keep-awake:stripReleaseDebugSymbols NO-SOURCE
+> Task :react-native-keep-awake:copyReleaseJniLibsProjectAndLocalJars UP-TO-DATE
+> Task :react-native-keep-awake:extractDeepLinksForAarRelease UP-TO-DATE
+> Task :react-native-keep-awake:extractReleaseAnnotations UP-TO-DATE
+> Task :react-native-keep-awake:mergeReleaseGeneratedProguardFiles UP-TO-DATE
+> Task :react-native-keep-awake:mergeReleaseConsumerProguardFiles UP-TO-DATE
+> Task :react-native-keep-awake:mergeReleaseShaders UP-TO-DATE
+> Task :react-native-keep-awake:compileReleaseShaders NO-SOURCE
+> Task :react-native-keep-awake:generateReleaseAssets UP-TO-DATE
+> Task :react-native-keep-awake:packageReleaseAssets UP-TO-DATE
+> Task :react-native-keep-awake:prepareReleaseArtProfile UP-TO-DATE
+> Task :react-native-keep-awake:mergeReleaseJavaResource UP-TO-DATE
+> Task :react-native-keep-awake:syncReleaseLibJars UP-TO-DATE
+> Task :react-native-keep-awake:bundleReleaseLocalLintAar UP-TO-DATE
+> Task :react-native-linear-gradient:mergeReleaseJniLibFolders UP-TO-DATE
+> Task :react-native-linear-gradient:mergeReleaseNativeLibs NO-SOURCE
+> Task :react-native-linear-gradient:stripReleaseDebugSymbols NO-SOURCE
+> Task :react-native-linear-gradient:copyReleaseJniLibsProjectAndLocalJars UP-TO-DATE
+> Task :react-native-linear-gradient:extractDeepLinksForAarRelease UP-TO-DATE
+> Task :react-native-linear-gradient:extractReleaseAnnotations UP-TO-DATE
+> Task :react-native-linear-gradient:mergeReleaseGeneratedProguardFiles UP-TO-DATE
+> Task :react-native-linear-gradient:mergeReleaseConsumerProguardFiles UP-TO-DATE
+> Task :react-native-linear-gradient:mergeReleaseShaders UP-TO-DATE
+> Task :react-native-linear-gradient:compileReleaseShaders NO-SOURCE
+> Task :react-native-linear-gradient:generateReleaseAssets UP-TO-DATE
+> Task :react-native-linear-gradient:packageReleaseAssets UP-TO-DATE
+> Task :react-native-linear-gradient:prepareReleaseArtProfile UP-TO-DATE
+> Task :react-native-linear-gradient:mergeReleaseJavaResource UP-TO-DATE
+> Task :react-native-linear-gradient:syncReleaseLibJars UP-TO-DATE
+> Task :react-native-linear-gradient:bundleReleaseLocalLintAar UP-TO-DATE
+> Task :react-native-maps:mergeReleaseJniLibFolders UP-TO-DATE
+> Task :react-native-maps:mergeReleaseNativeLibs NO-SOURCE
+> Task :react-native-maps:stripReleaseDebugSymbols NO-SOURCE
+> Task :react-native-maps:copyReleaseJniLibsProjectAndLocalJars UP-TO-DATE
+> Task :react-native-maps:extractDeepLinksForAarRelease UP-TO-DATE
+> Task :react-native-maps:extractReleaseAnnotations UP-TO-DATE
+> Task :react-native-maps:mergeReleaseGeneratedProguardFiles UP-TO-DATE
+> Task :react-native-maps:mergeReleaseConsumerProguardFiles UP-TO-DATE
+> Task :react-native-maps:mergeReleaseShaders UP-TO-DATE
+> Task :react-native-maps:compileReleaseShaders NO-SOURCE
+> Task :react-native-maps:generateReleaseAssets UP-TO-DATE
+> Task :react-native-maps:packageReleaseAssets UP-TO-DATE
+> Task :react-native-maps:prepareReleaseArtProfile UP-TO-DATE
+> Task :react-native-maps:mergeReleaseJavaResource UP-TO-DATE
+> Task :react-native-maps:syncReleaseLibJars UP-TO-DATE
+> Task :react-native-maps:bundleReleaseLocalLintAar UP-TO-DATE
+> Task :react-native-reanimated:mergeReleaseJniLibFolders UP-TO-DATE
+> Task :react-native-reanimated:mergeReleaseNativeLibs UP-TO-DATE
+> Task :react-native-reanimated:stripReleaseDebugSymbols UP-TO-DATE
+> Task :react-native-reanimated:copyReleaseJniLibsProjectAndLocalJars UP-TO-DATE
+> Task :react-native-reanimated:extractDeepLinksForAarRelease UP-TO-DATE
+> Task :react-native-reanimated:extractReleaseAnnotations UP-TO-DATE
+> Task :react-native-reanimated:mergeReleaseGeneratedProguardFiles UP-TO-DATE
+> Task :react-native-reanimated:mergeReleaseConsumerProguardFiles UP-TO-DATE
+> Task :react-native-reanimated:mergeReleaseShaders UP-TO-DATE
+> Task :react-native-reanimated:compileReleaseShaders NO-SOURCE
+> Task :react-native-reanimated:generateReleaseAssets UP-TO-DATE
+> Task :react-native-reanimated:packageReleaseAssets UP-TO-DATE
+> Task :react-native-reanimated:prepareReleaseArtProfile UP-TO-DATE
+> Task :react-native-reanimated:mergeReleaseJavaResource UP-TO-DATE
+> Task :react-native-reanimated:syncReleaseLibJars UP-TO-DATE
+> Task :react-native-reanimated:bundleReleaseLocalLintAar UP-TO-DATE
+> Task :react-native-svg:mergeReleaseJniLibFolders UP-TO-DATE
+> Task :react-native-svg:mergeReleaseNativeLibs NO-SOURCE
+> Task :react-native-svg:stripReleaseDebugSymbols NO-SOURCE
+> Task :react-native-svg:copyReleaseJniLibsProjectAndLocalJars UP-TO-DATE
+> Task :react-native-svg:extractDeepLinksForAarRelease UP-TO-DATE
+> Task :react-native-svg:extractReleaseAnnotations UP-TO-DATE
+> Task :react-native-svg:mergeReleaseGeneratedProguardFiles UP-TO-DATE
+> Task :react-native-svg:mergeReleaseConsumerProguardFiles UP-TO-DATE
+> Task :react-native-svg:mergeReleaseShaders UP-TO-DATE
+> Task :react-native-svg:compileReleaseShaders NO-SOURCE
+> Task :react-native-svg:generateReleaseAssets UP-TO-DATE
+> Task :react-native-svg:packageReleaseAssets UP-TO-DATE
+> Task :react-native-svg:prepareReleaseArtProfile UP-TO-DATE
+> Task :react-native-svg:mergeReleaseJavaResource UP-TO-DATE
+> Task :react-native-svg:syncReleaseLibJars UP-TO-DATE
+> Task :react-native-svg:bundleReleaseLocalLintAar UP-TO-DATE
+> Task :react-native-vector-icons:mergeReleaseJniLibFolders UP-TO-DATE
+> Task :react-native-vector-icons:mergeReleaseNativeLibs NO-SOURCE
+> Task :react-native-vector-icons:stripReleaseDebugSymbols NO-SOURCE
+> Task :react-native-vector-icons:copyReleaseJniLibsProjectAndLocalJars UP-TO-DATE
+> Task :react-native-vector-icons:extractDeepLinksForAarRelease UP-TO-DATE
+> Task :react-native-vector-icons:extractReleaseAnnotations UP-TO-DATE
+> Task :react-native-vector-icons:mergeReleaseGeneratedProguardFiles UP-TO-DATE
+> Task :react-native-vector-icons:mergeReleaseConsumerProguardFiles UP-TO-DATE
+> Task :react-native-vector-icons:mergeReleaseShaders UP-TO-DATE
+> Task :react-native-vector-icons:compileReleaseShaders NO-SOURCE
+> Task :react-native-vector-icons:generateReleaseAssets UP-TO-DATE
+> Task :react-native-vector-icons:packageReleaseAssets UP-TO-DATE
+> Task :react-native-vector-icons:prepareReleaseArtProfile UP-TO-DATE
+> Task :react-native-vector-icons:mergeReleaseJavaResource UP-TO-DATE
+> Task :react-native-vector-icons:syncReleaseLibJars UP-TO-DATE
+> Task :react-native-vector-icons:bundleReleaseLocalLintAar UP-TO-DATE
+> Task :react-native-webrtc:mergeReleaseJniLibFolders UP-TO-DATE
+> Task :react-native-webrtc:mergeReleaseNativeLibs NO-SOURCE
+> Task :react-native-webrtc:stripReleaseDebugSymbols NO-SOURCE
+> Task :react-native-webrtc:copyReleaseJniLibsProjectAndLocalJars UP-TO-DATE
+> Task :react-native-webrtc:extractDeepLinksForAarRelease UP-TO-DATE
+> Task :react-native-webrtc:extractReleaseAnnotations UP-TO-DATE
+> Task :react-native-webrtc:mergeReleaseGeneratedProguardFiles UP-TO-DATE
+> Task :react-native-webrtc:mergeReleaseConsumerProguardFiles UP-TO-DATE
+> Task :react-native-webrtc:mergeReleaseShaders UP-TO-DATE
+> Task :react-native-webrtc:compileReleaseShaders NO-SOURCE
+> Task :react-native-webrtc:generateReleaseAssets UP-TO-DATE
+> Task :react-native-webrtc:packageReleaseAssets UP-TO-DATE
+> Task :react-native-webrtc:prepareReleaseArtProfile UP-TO-DATE
+> Task :react-native-webrtc:mergeReleaseJavaResource UP-TO-DATE
+> Task :react-native-webrtc:syncReleaseLibJars UP-TO-DATE
+> Task :react-native-webrtc:bundleReleaseLocalLintAar UP-TO-DATE
+> Task :react-native-async-storage_async-storage:lintVitalAnalyzeRelease UP-TO-DATE
+> Task :react-native-async-storage_async-storage:writeReleaseLintModelMetadata UP-TO-DATE
+> Task :react-native-community_blur:lintVitalAnalyzeRelease UP-TO-DATE
+> Task :react-native-community_blur:writeReleaseLintModelMetadata UP-TO-DATE
+> Task :react-native-community_netinfo:lintVitalAnalyzeRelease UP-TO-DATE
+> Task :react-native-community_netinfo:writeReleaseLintModelMetadata UP-TO-DATE
+> Task :react-native-firebase_app:lintVitalAnalyzeRelease UP-TO-DATE
+> Task :react-native-firebase_app:writeReleaseLintModelMetadata UP-TO-DATE
+> Task :react-native-firebase_auth:lintVitalAnalyzeRelease UP-TO-DATE
+> Task :react-native-firebase_auth:writeReleaseLintModelMetadata UP-TO-DATE
+> Task :react-native-firebase_database:lintVitalAnalyzeRelease UP-TO-DATE
+> Task :react-native-firebase_database:writeReleaseLintModelMetadata UP-TO-DATE
+> Task :react-native-reanimated:writeReleaseLintModelMetadata UP-TO-DATE
+> Task :react-native-svg:writeReleaseLintModelMetadata UP-TO-DATE
+> Task :react-native-gesture-handler:lintVitalAnalyzeRelease UP-TO-DATE
+> Task :react-native-gesture-handler:writeReleaseLintModelMetadata UP-TO-DATE
+> Task :react-native-keep-awake:lintVitalAnalyzeRelease UP-TO-DATE
+> Task :react-native-keep-awake:writeReleaseLintModelMetadata UP-TO-DATE
+> Task :react-native-linear-gradient:lintVitalAnalyzeRelease UP-TO-DATE
+> Task :react-native-linear-gradient:writeReleaseLintModelMetadata UP-TO-DATE
+> Task :react-native-maps:writeReleaseLintModelMetadata UP-TO-DATE
+> Task :react-native-reanimated:lintVitalAnalyzeRelease UP-TO-DATE
+> Task :react-native-safe-area-context:writeReleaseLintModelMetadata UP-TO-DATE
+> Task :react-native-screens:writeReleaseLintModelMetadata UP-TO-DATE
+> Task :react-native-vector-icons:writeReleaseLintModelMetadata UP-TO-DATE
+> Task :react-native-webrtc:writeReleaseLintModelMetadata UP-TO-DATE
+> Task :stripe_stripe-react-native:writeReleaseLintModelMetadata UP-TO-DATE
+> Task :react-native-async-storage_async-storage:generateReleaseLintVitalModel UP-TO-DATE
+> Task :react-native-community_blur:generateReleaseLintVitalModel UP-TO-DATE
+> Task :react-native-community_netinfo:generateReleaseLintVitalModel UP-TO-DATE
+> Task :react-native-firebase_app:generateReleaseLintVitalModel UP-TO-DATE
+> Task :react-native-firebase_auth:generateReleaseLintVitalModel UP-TO-DATE
+> Task :react-native-firebase_database:generateReleaseLintVitalModel UP-TO-DATE
+> Task :react-native-gesture-handler:generateReleaseLintVitalModel UP-TO-DATE
+> Task :react-native-keep-awake:generateReleaseLintVitalModel UP-TO-DATE
+> Task :react-native-linear-gradient:generateReleaseLintVitalModel UP-TO-DATE
+> Task :react-native-maps:generateReleaseLintVitalModel UP-TO-DATE
+> Task :react-native-reanimated:generateReleaseLintVitalModel UP-TO-DATE
+> Task :react-native-safe-area-context:generateReleaseLintVitalModel UP-TO-DATE
+> Task :react-native-screens:generateReleaseLintVitalModel UP-TO-DATE
+> Task :react-native-svg:generateReleaseLintVitalModel UP-TO-DATE
+> Task :react-native-vector-icons:generateReleaseLintVitalModel UP-TO-DATE
+> Task :react-native-webrtc:generateReleaseLintVitalModel UP-TO-DATE
+> Task :stripe_stripe-react-native:generateReleaseLintVitalModel UP-TO-DATE
+> Task :app:configureCMakeRelWithDebInfo[arm64-v8a]
+> Task :app:buildCMakeRelWithDebInfo[arm64-v8a]
+> Task :app:configureCMakeRelWithDebInfo[armeabi-v7a]
+> Task :app:buildCMakeRelWithDebInfo[armeabi-v7a]
+> Task :app:configureCMakeRelWithDebInfo[x86]

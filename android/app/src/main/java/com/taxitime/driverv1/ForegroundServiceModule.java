@@ -31,6 +31,7 @@ public class ForegroundServiceModule extends ReactContextBaseJavaModule {
         try {
             ReactApplicationContext context = getReactApplicationContext();
             Intent serviceIntent = new Intent(context, ForegroundService.class);
+            ForegroundService.setShouldRestartService(true);
             
             // Pass shift data to service
             serviceIntent.putExtra("driverName", driverName);
@@ -59,6 +60,7 @@ public class ForegroundServiceModule extends ReactContextBaseJavaModule {
         try {
             ReactApplicationContext context = getReactApplicationContext();
             Intent serviceIntent = new Intent(context, ForegroundService.class);
+            ForegroundService.setShouldRestartService(false);
             context.stopService(serviceIntent);
             promise.resolve(null);
         } catch (Exception e) {
@@ -119,6 +121,22 @@ public class ForegroundServiceModule extends ReactContextBaseJavaModule {
             promise.resolve(null);
         } catch (Exception e) {
             promise.reject("CLEAR_DRIVER_DATA_ERROR", e.getMessage());
+        }
+    }
+
+    /**
+     * 🚀 Bring the app to the foreground (Android only)
+     */
+    @ReactMethod
+    public void bringToForeground(Promise promise) {
+        try {
+            ReactApplicationContext context = getReactApplicationContext();
+            Intent intent = new Intent(context, MainActivity.class);
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+            context.startActivity(intent);
+            promise.resolve(null);
+        } catch (Exception e) {
+            promise.reject("BRING_TO_FOREGROUND_ERROR", e.getMessage());
         }
     }
 }

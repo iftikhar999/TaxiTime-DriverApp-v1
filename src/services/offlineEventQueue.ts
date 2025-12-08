@@ -16,9 +16,14 @@ export interface QueuedEvent {
     | "location"
     | "job_progress"
     | "meter_telemetry"
+    | "meter_snapshot"
     | "heartbeat";
   eventName: string;
   payload: any;
+  eventId?: string;
+  ackEvent?: string;
+  errorEvent?: string;
+  timeoutMs?: number;
   timestamp: number;
   retryCount: number;
 }
@@ -92,7 +97,7 @@ class OfflineEventQueue {
    * Process queued events (replay them)
    */
   async processQueue(
-    emitFunction: (eventName: string, payload: any) => void
+    emitFunction: (event: QueuedEvent) => Promise<void>
   ): Promise<{ success: number; failed: number }> {
     if (this.isProcessing || this.queue.length === 0) {
       return { success: 0, failed: 0 };
@@ -117,7 +122,7 @@ class OfflineEventQueue {
         }
 
         // Emit the event
-        emitFunction(event.eventName, event.payload);
+        await emitFunction(event);
         successCount++;
 
         console.log(`✅ Replayed: ${event.eventName} (${event.type})`);
