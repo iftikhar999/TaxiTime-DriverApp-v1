@@ -164,12 +164,15 @@ export const JobQueueProvider: React.FC<{ children: React.ReactNode }> = ({
     try {
       console.log('[JobQueue] 🔍 Fetching nearby pending jobs...');
       
-      // Fetch pending/unassigned jobs from backend
-      const response = await httpClient.get('/api/dispatch/jobs', {
+      // Use the mobile driver API endpoint which is designed for drivers
+      // This endpoint at /api/mobile/driver/jobs/nearby handles zone filtering 
+      // and only returns jobs appropriate for the driver's company/zone
+      const response = await httpClient.get('/mobile/driver/jobs/nearby', {
         params: {
-          status: 'PENDING,UNASSIGNED',
+          latitude: location.latitude,
+          longitude: location.longitude,
+          excludeJobId: currentJob?.id,
           limit: 20,
-          companyId: driver.companyId,
         },
       });
       
@@ -283,7 +286,7 @@ export const JobQueueProvider: React.FC<{ children: React.ReactNode }> = ({
     try {
       // Notify backend that driver wants to hold this job
       // This can be used to temporarily reserve the job
-      await httpClient.post(`/api/mobile/driver/jobs/${job.id}/queue`, {
+      await httpClient.post(`/mobile/driver/jobs/${job.id}/queue`, {
         driverId: driver?.id,
         queuedAt: new Date().toISOString(),
         currentJobId: currentJob?.id,
@@ -326,7 +329,7 @@ export const JobQueueProvider: React.FC<{ children: React.ReactNode }> = ({
     console.log(`[JobQueue] 🗑️ Clearing queued job ${queuedJob.id}`);
     
     // Notify backend (optional - for analytics)
-    httpClient.delete(`/api/mobile/driver/jobs/${queuedJob.id}/queue`).catch(err => {
+    httpClient.delete(`/mobile/driver/jobs/${queuedJob.id}/queue`).catch(err => {
       console.warn('[JobQueue] Backend clear queue API not available:', err.message);
     });
     
@@ -367,7 +370,7 @@ export const JobQueueProvider: React.FC<{ children: React.ReactNode }> = ({
     
     try {
       // First, claim/accept the job on the backend
-      const response = await httpClient.post(`/api/mobile/driver/jobs/${jobToStart.id}/claim`, {
+      const response = await httpClient.post(`/mobile/driver/jobs/${jobToStart.id}/claim`, {
         driverId: driver?.id,
         autoStart: true, // Signal that this is auto-start from queue
       });

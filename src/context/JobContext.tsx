@@ -906,13 +906,48 @@ export const JobProvider: React.FC<{ children: React.ReactNode }> = ({
         waitingSeconds: update.waitingSeconds,
         distanceMeters: update.distanceMeters,
       });
+
+      // ✅ FIX: Emit meter telemetry to backend for real-time dispatch tracking
+      if (currentJob?.id) {
+        emitMeterTelemetry(currentJob.id, {
+          elapsedSeconds: update.elapsedSeconds,
+          waitingSeconds: update.waitingSeconds,
+          distanceMeters: update.distanceMeters,
+          isMoving: update.isMoving,
+          timestamp: update.timestamp || Date.now(),
+        });
+      }
     });
 
     return () => {
       console.log('[JobContext] 📡 Unsubscribing from background meter updates');
       unsubscribe();
     };
-  }, [status]);
+  }, [status, currentJob?.id]);
+
+  // ✅ FIX: Periodic meter telemetry emission (every 5 seconds during active ride)
+  useEffect(() => {
+    if (status !== "STARTED" || !currentJob?.id) return;
+
+    console.log('[JobContext] 📊 Starting periodic meter telemetry emission');
+    
+    const intervalId = setInterval(() => {
+      // Emit current timer state to backend
+      emitMeterTelemetry(currentJob.id!, {
+        elapsedSeconds: timer.elapsedSeconds,
+        waitingSeconds: timer.waitingSeconds,
+        distanceMeters: timer.distanceMeters,
+        currentFare: timer.earningsSoFar || pricingBreakdown?.total || 0,
+        speedKmh: timer.speedKmh || 0,
+      });
+      console.log(`[JobContext] 📊 Emitted telemetry: ${timer.elapsedSeconds}s, ${timer.distanceMeters}m, $${timer.earningsSoFar || 0}`);
+    }, 5000); // Every 5 seconds
+
+    return () => {
+      console.log('[JobContext] 📊 Stopping periodic meter telemetry emission');
+      clearInterval(intervalId);
+    };
+  }, [status, currentJob?.id, timer.elapsedSeconds, timer.waitingSeconds, timer.distanceMeters, timer.earningsSoFar, timer.speedKmh, pricingBreakdown?.total]);
 
   useEffect(() => {
     if (!currentJob || !location || !TRACKABLE_STATUSES.has(status)) {

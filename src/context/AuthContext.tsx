@@ -7,6 +7,7 @@ import React, {
     useMemo,
     useState,
 } from "react";
+import { Alert } from "react-native";
 import {
     login as loginService,
     logout as logoutService,
@@ -15,6 +16,7 @@ import {
 } from "../services/authService";
 import { clearAllAppCache } from "../services/cacheCleanup";
 import { fetchDriverProfile } from "../services/driverService";
+import { registerKickedListener } from "../services/driverSocket";
 import { DriverProfile } from "../types/driver";
 
 interface AuthContextValue {
@@ -97,6 +99,41 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
       setLoading(false);
     });
   }, [loadStoredSession]);
+
+  // ✅ Register kicked listener to force logout when kicked by dispatch
+  useEffect(() => {
+    if (!token || !driver) return;
+    
+    const handleKicked = (data: { reason: string; kickedBy?: string; timestamp: string; message: string }) => {
+      console.error('🚨 DRIVER KICKED - Forcing logout:', data);
+      
+      // Show alert to driver
+      Alert.alert(
+        'Session Terminated',
+        data.message || 'Your session has been terminated by dispatch.',
+        [
+          {
+            text: 'OK',
+            onPress: async () => {
+              // Force logout
+              try {
+                await handleLogout();
+              } catch (error) {
+                console.error('Error during kicked logout:', error);
+                // Force clear state anyway
+                setToken(null);
+                setDriver(null);
+              }
+            }
+          }
+        ],
+        { cancelable: false }
+      );
+    };
+    
+    registerKickedListener(handleKicked);
+    console.log('🚨 Kicked listener registered for driver:', driver.id);
+  }, [token, driver?.id]);
 
   const refreshDriver = useCallback(async () => {
     if (!token) return;

@@ -63,7 +63,7 @@ function registerEventHandlers(): void {
   // Job acceptance
   offlineQueue.registerHandler('job:accept', async (payload) => {
     logger.debug('api', 'Processing queued job:accept', payload);
-    await httpClient.post(`/api/mobile/driver/jobs/${payload.jobId}/accept`, {
+    await httpClient.post(`/mobile/driver/jobs/${payload.jobId}/accept`, {
       acceptedAt: payload.acceptedAt,
       location: payload.location,
     });
@@ -72,7 +72,7 @@ function registerEventHandlers(): void {
   // Job rejection
   offlineQueue.registerHandler('job:reject', async (payload) => {
     logger.debug('api', 'Processing queued job:reject', payload);
-    await httpClient.post(`/api/mobile/driver/jobs/${payload.jobId}/reject`, {
+    await httpClient.post(`/mobile/driver/jobs/${payload.jobId}/reject`, {
       reason: payload.reason,
       rejectedAt: payload.rejectedAt,
     });
@@ -81,7 +81,7 @@ function registerEventHandlers(): void {
   // Job status updates
   offlineQueue.registerHandler('job:update-status', async (payload) => {
     logger.debug('api', 'Processing queued job:update-status', payload);
-    await httpClient.patch(`/api/mobile/driver/jobs/${payload.jobId}/status`, {
+    await httpClient.patch(`/mobile/driver/jobs/${payload.jobId}/status`, {
       status: payload.status,
       timestamp: payload.timestamp,
       location: payload.location,
@@ -92,7 +92,7 @@ function registerEventHandlers(): void {
   // Location updates (batch)
   offlineQueue.registerHandler('location:batch', async (payload) => {
     logger.debug('api', 'Processing queued location:batch', payload);
-    await httpClient.post('/api/mobile/driver/location/batch', {
+    await httpClient.post('/mobile/driver/location/batch', {
       locations: payload.locations,
     });
   });
@@ -100,7 +100,7 @@ function registerEventHandlers(): void {
   // Payment submission
   offlineQueue.registerHandler('payment:submit', async (payload) => {
     logger.debug('api', 'Processing queued payment:submit', payload);
-    await httpClient.post('/api/mobile/driver/payments', payload);
+    await httpClient.post('/mobile/driver/payments', payload);
   });
 }
 

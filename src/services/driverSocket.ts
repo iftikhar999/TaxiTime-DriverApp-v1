@@ -390,6 +390,44 @@ export const ensureDriverSocket = (config: DriverSocketConfig): Socket => {
     console.log('✅ Shift ended notification processed - mobile app will sync');
   });
 
+  // ✅ Listen for driver kicked event (from dispatch)
+  socket.on(`driver:kicked:${currentDriver?.driverId}`, (data: any) => {
+    console.error('🚨 DRIVER KICKED BY DISPATCH:', {
+      reason: data.reason,
+      kickedBy: data.kickedBy,
+      timestamp: data.timestamp,
+      message: data.message,
+    });
+    
+    // ✅ Notify all callbacks to clear state
+    if (driverStateRestorationCallbacks.length > 0) {
+      console.log(`📢 Broadcasting kicked event to ${driverStateRestorationCallbacks.length} callbacks`);
+      const nullState = {
+        shift: null,
+        vehicle: null,
+        tariff: null,
+        job: null,
+        kicked: true,
+        kickReason: data.reason || 'Kicked by dispatcher',
+        kickMessage: data.message || 'Your session has been terminated by dispatch',
+      };
+      driverStateRestorationCallbacks.forEach((callback) => {
+        try {
+          callback(nullState);
+        } catch (error) {
+          console.error('❌ Failed to notify kicked:', error);
+        }
+      });
+    }
+    
+    // ✅ Call specific kicked callback if registered
+    if (kickedCallback) {
+      kickedCallback(data);
+    }
+    
+    console.log('⚠️ Driver kicked - forcing logout');
+  });
+
   return socket;
 };
 
@@ -630,6 +668,9 @@ export const emitAppStateChange = (appState: 'ACTIVE' | 'BACKGROUND' | 'INACTIVE
 // Zone change listener callback
 let zoneChangeCallback: ((data: { zoneId: string | null; zoneName: string | null }) => void) | null = null;
 
+// Kicked callback - called when driver is kicked by dispatch
+let kickedCallback: ((data: { reason: string; kickedBy?: string; timestamp: string; message: string }) => void) | null = null;
+
 /**
  * Register callback for zone changes from server
  * Server detects zone and sends updates via this event
@@ -639,6 +680,17 @@ export const registerZoneChangeListener = (
 ) => {
   zoneChangeCallback = callback;
   console.log('📍 Zone change listener registered');
+};
+
+/**
+ * Register callback for when driver is kicked by dispatch
+ * This will force logout the driver
+ */
+export const registerKickedListener = (
+  callback: (data: { reason: string; kickedBy?: string; timestamp: string; message: string }) => void
+) => {
+  kickedCallback = callback;
+  console.log('🚨 Kicked listener registered');
 };
 
 /**
