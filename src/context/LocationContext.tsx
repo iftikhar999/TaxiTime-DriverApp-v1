@@ -1,5 +1,6 @@
-import React, { createContext, useCallback, useEffect, useMemo, useState } from 'react';
+import React, { createContext, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Toast from 'react-native-toast-message';
+import { __DEV_MODE__, logger } from '../config/environment';
 import {
   LocationUpdate,
   startLocationService,
@@ -26,12 +27,20 @@ interface LocationContextValue {
 
 const LocationContext = createContext<LocationContextValue | undefined>(undefined);
 
+// ✅ OPTIMIZATION: Throttle location updates to reduce state changes
+const LOCATION_THROTTLE_MS = 2000; // Minimum 2 seconds between UI updates
+
 export const LocationProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [location, setLocation] = useState<LocationUpdate | null>(null);
   const [tracking, setTracking] = useState(false);
   const [starting, setStarting] = useState(false);
   const { isAuthenticated, driver } = useAuth();
   const { selectedVehicle, activeShift } = useShift();
+  
+  // ✅ OPTIMIZATION: Use refs for throttling
+  const lastUpdateTimeRef = useRef(0);
+  const pendingUpdateRef = useRef<LocationUpdate | null>(null);
+  const throttleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const startTracking = useCallback(async (): Promise<boolean> => {
     if (tracking || starting) {
@@ -72,35 +81,60 @@ export const LocationProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   useEffect(() => {
     const subscription = subscribeToLocations((update) => {
-      console.log('📍 LOCATION UPDATE RECEIVED:', {
-        latitude: update.latitude?.toFixed(6),
-        longitude: update.longitude?.toFixed(6),
-        speed: update.speed,
-        accuracy: update.accuracy,
-        timestamp: new Date(update.timestamp).toLocaleTimeString(),
-      });
+      // ✅ OPTIMIZATION: Throttle UI updates while still emitting to socket
+      const now = Date.now();
+      const timeSinceLastUpdate = now - lastUpdateTimeRef.current;
       
-      // ✅ FORCE UPDATE: Accept all GPS updates regardless of accuracy
-      console.log('✅ SETTING LOCATION STATE:', update);
-      setLocation(update);
-      console.log('✅ LOCATION STATE UPDATED');
-
+      // Always emit to socket (real-time requirement)
       if (driver?.id) {
-        // ✨ NEW: Include app state in location updates
         const appState = appStateService.getState();
-        console.log('📡 ATTEMPTING TO EMIT LOCATION:', {
-          driverId: driver.id,
-          appState,
-          hasLocation: !!update,
-          accuracy: update.accuracy,
-        });
         emitDriverLocation(update, appState);
+      }
+      
+      // Throttle state updates (UI doesn't need 1-second precision)
+      if (timeSinceLastUpdate >= LOCATION_THROTTLE_MS) {
+        // Enough time has passed, update immediately
+        if (__DEV_MODE__) {
+          logger.debug('📍 Location update:', {
+            lat: update.latitude?.toFixed(6),
+            lng: update.longitude?.toFixed(6),
+          });
+        }
+        setLocation(update);
+        lastUpdateTimeRef.current = now;
+        pendingUpdateRef.current = null;
+        
+        // Clear any pending throttled update
+        if (throttleTimerRef.current) {
+          clearTimeout(throttleTimerRef.current);
+          throttleTimerRef.current = null;
+        }
       } else {
-        console.warn('⚠️ Location update received but no driver ID - not emitting');
+        // Store pending update for later
+        pendingUpdateRef.current = update;
+        
+        // Schedule update for when throttle period ends
+        if (!throttleTimerRef.current) {
+          const timeUntilNextUpdate = LOCATION_THROTTLE_MS - timeSinceLastUpdate;
+          throttleTimerRef.current = setTimeout(() => {
+            throttleTimerRef.current = null;
+            if (pendingUpdateRef.current) {
+              setLocation(pendingUpdateRef.current);
+              lastUpdateTimeRef.current = Date.now();
+              pendingUpdateRef.current = null;
+            }
+          }, timeUntilNextUpdate);
+        }
       }
     });
+    
     return () => {
       subscription.remove();
+      // Cleanup throttle timer
+      if (throttleTimerRef.current) {
+        clearTimeout(throttleTimerRef.current);
+        throttleTimerRef.current = null;
+      }
     };
   }, [driver?.id]);
 
@@ -109,15 +143,15 @@ export const LocationProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     if (isAuthenticated && driver?.id) {
       const companyId = driver.companyId || driver.company?.id;
       
-      console.log('🔌 Ensuring socket connection:', {
-        driverId: driver.id,
-        companyId,
-        isAuthenticated,
-      });
+      if (__DEV_MODE__) {
+        logger.debug('🔌 Ensuring socket connection:', { driverId: driver.id, companyId });
+      }
       
       ensureDriverSocket({ driverId: driver.id, companyId: companyId || undefined });
     } else {
-      console.log('🔌 Disconnecting socket (not authenticated)');
+      if (__DEV_MODE__) {
+        logger.debug('🔌 Disconnecting socket (not authenticated)');
+      }
       disconnectDriverSocket();
     }
   }, [isAuthenticated, driver?.id, driver?.companyId, driver?.company?.id]);
@@ -132,15 +166,14 @@ export const LocationProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     const unsubscribe = appStateService.addListener((newState) => {
       emitAppStateChange(newState);
       
-      // Log for debugging
+      // ✅ OPTIMIZATION: Reduced logging
       if (newState === 'BACKGROUND') {
-        console.log('📱 Driver minimized app - dispatcher notified');
+        if (__DEV_MODE__) logger.debug('📱 App backgrounded');
         // DON'T stop tracking - let it continue in background
       } else if (newState === 'ACTIVE') {
-        console.log('📱 Driver returned to app - dispatcher notified');
+        if (__DEV_MODE__) logger.debug('📱 App foregrounded');
         
         // ✅ CRITICAL FIX 1: Re-establish socket connection
-        console.log('🔌 Re-establishing socket connection...');
         ensureDriverSocket({ driverId: driver.id, companyId: companyId || undefined });
         
         // ✅ CRITICAL FIX 2: Restart location tracking if shift is active

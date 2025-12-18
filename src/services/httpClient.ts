@@ -1,11 +1,14 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import axios from "axios";
-import { API_BASE_URL } from "../config/environment";
+import { API_BASE_URL, __DEV_MODE__, logger } from "../config/environment";
 
 const httpClient = axios.create({
   baseURL: API_BASE_URL,
   timeout: 15000,
 });
+
+// ✅ OPTIMIZATION: Track in-flight requests for deduplication
+const inflightRequests = new Map<string, Promise<any>>();
 
 httpClient.interceptors.request.use(async (config) => {
   const token = await AsyncStorage.getItem("authToken");
@@ -13,13 +16,10 @@ httpClient.interceptors.request.use(async (config) => {
     config.headers.Authorization = `Bearer ${token}`;
   }
   
-  // 🔍 LOG EVERY REQUEST
-  console.log('🌐 HTTP REQUEST:', {
-    method: config.method?.toUpperCase(),
-    baseURL: config.baseURL,
-    url: config.url,
-    fullURL: `${config.baseURL}${config.url}`,
-  });
+  // ✅ OPTIMIZATION: Only log in dev mode
+  if (__DEV_MODE__) {
+    logger.debug('🌐 HTTP:', config.method?.toUpperCase(), config.url);
+  }
   
   return config;
 });
@@ -27,24 +27,18 @@ httpClient.interceptors.request.use(async (config) => {
 // Response interceptor for error handling
 httpClient.interceptors.response.use(
   (response) => {
-    // ✅ LOG SUCCESS
-    console.log('✅ HTTP SUCCESS:', {
-      status: response.status,
-      url: response.config.url,
-    });
+    // ✅ OPTIMIZATION: Minimal success logging
+    if (__DEV_MODE__) {
+      logger.debug('✅', response.status, response.config.url);
+    }
     return response;
   },
   async (error) => {
-    // 🔴 LOG ERRORS IN DETAIL
-    console.error('🔴 HTTP ERROR:', {
-      message: error.message,
+    // ✅ Always log errors (even in production)
+    logger.error('🔴 HTTP ERROR:', {
       url: error.config?.url,
-      baseURL: error.config?.baseURL,
-      fullURL: error.config ? `${error.config.baseURL}${error.config.url}` : 'N/A',
       status: error.response?.status,
-      statusText: error.response?.statusText,
-      errorData: error.response?.data,
-      isNetworkError: error.message === 'Network Error',
+      message: error.response?.data?.message || error.message,
     });
     
     // Don't auto-logout for status update API calls - let the app handle gracefully
@@ -57,16 +51,7 @@ httpClient.interceptors.response.use(
       !isAuthentication
     ) {
       // Only logout for non-status-update 401 errors
-      console.warn(
-        "⚠️ Authentication error - but preserving session for status updates"
-      );
-    }
-
-    // For status update failures, just log and continue
-    if (isStatusUpdate && error.response?.status === 401) {
-      console.warn(
-        "⚠️ Status update authentication failed - preserving session"
-      );
+      logger.warn("⚠️ Auth error - preserving session");
     }
 
     return Promise.reject(error);

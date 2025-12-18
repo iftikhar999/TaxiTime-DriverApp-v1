@@ -1,4 +1,5 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { __DEV_MODE__, logger } from "../config/environment";
 import { DriverProfile } from "../types/driver";
 import { RecentJobSummary } from "../types/recentJob";
 import {
@@ -9,6 +10,7 @@ import {
 } from "../types/shift";
 import { Tariff } from "../types/tariff";
 import { DriverVehiclesResponse } from "../types/vehicle";
+import { apiRequestManager } from "./apiRequestManager";
 import httpClient from "./httpClient";
 
 interface ProfileResponse {
@@ -21,46 +23,69 @@ interface VehiclesResponse {
   data: DriverVehiclesResponse;
 }
 
+// ✅ OPTIMIZATION: Use request manager for caching and deduplication
 export const fetchDriverProfile = async (): Promise<DriverProfile> => {
-  const response = await httpClient.get<ProfileResponse>(
-    "/mobile/driver/profile"
+  return apiRequestManager.request(
+    '/mobile/driver/profile',
+    async () => {
+      const response = await httpClient.get<ProfileResponse>("/mobile/driver/profile");
+      return response.data.data;
+    },
+    undefined,
+    { cacheTtl: 60000 } // Cache for 1 minute
   );
-  return response.data.data;
 };
 
-export const fetchDriverVehicles =
-  async (): Promise<DriverVehiclesResponse> => {
-    const response = await httpClient.get<VehiclesResponse>(
-      "/mobile/driver/vehicles"
-    );
-    return response.data.data;
-  };
-
-export const fetchCompanyTariffs = async (
-  companyId: string
-): Promise<Tariff[]> => {
-  const response = await httpClient.get<{ success: boolean; data: Tariff[] }>(
-    `/companies/${companyId}/tariffs`
+export const fetchDriverVehicles = async (): Promise<DriverVehiclesResponse> => {
+  return apiRequestManager.request(
+    '/mobile/driver/vehicles',
+    async () => {
+      const response = await httpClient.get<VehiclesResponse>("/mobile/driver/vehicles");
+      return response.data.data;
+    },
+    undefined,
+    { cacheTtl: 120000 } // Cache for 2 minutes
   );
-  return response.data.data;
+};
+
+export const fetchCompanyTariffs = async (companyId: string): Promise<Tariff[]> => {
+  return apiRequestManager.request(
+    '/companies/tariffs',
+    async () => {
+      const response = await httpClient.get<{ success: boolean; data: Tariff[] }>(
+        `/companies/${companyId}/tariffs`
+      );
+      return response.data.data;
+    },
+    { companyId },
+    { cacheTtl: 300000 } // Cache for 5 minutes
+  );
 };
 
 /**
  * Fetch tariffs for a specific vehicle based on its zone assignments
  * Only returns tariffs for zones that the vehicle is authorized to operate in
  */
-export const fetchVehicleTariffs = async (
-  vehicleId: string
-): Promise<Tariff[]> => {
-  const response = await httpClient.get<{ success: boolean; data: Tariff[] }>(
-    `/mobile/driver/vehicles/${vehicleId}/tariffs`
+export const fetchVehicleTariffs = async (vehicleId: string): Promise<Tariff[]> => {
+  return apiRequestManager.request(
+    '/mobile/driver/vehicles/tariffs',
+    async () => {
+      const response = await httpClient.get<{ success: boolean; data: Tariff[] }>(
+        `/mobile/driver/vehicles/${vehicleId}/tariffs`
+      );
+      return response.data.data;
+    },
+    { vehicleId },
+    { cacheTtl: 300000 } // Cache for 5 minutes
   );
-  return response.data.data;
 };
 
 export const startDriverShift = async (
   payload: StartShiftPayload
 ): Promise<ShiftStartResponse> => {
+  // Invalidate caches when starting shift
+  apiRequestManager.invalidatePattern('shift');
+  
   const response = await httpClient.post<{
     success: boolean;
     message: string;
@@ -91,7 +116,7 @@ const readLastKnownLocation = async () => {
       return parsed;
     }
   } catch (error) {
-    console.warn("Failed to read last known location", error);
+    logger.warn("Failed to read last known location", error);
   }
   return null;
 };
@@ -110,14 +135,13 @@ export const endDriverShift = async (
   const storedLocation = locationOverride ?? (await readLastKnownLocation());
   const location = storedLocation ?? DEFAULT_SHIFT_LOCATION;
 
-  console.log("🛑 Ending shift with location:", {
-    source: locationOverride ? "override" : storedLocation ? "AsyncStorage" : "default",
-    latitude: location.latitude,
-    longitude: location.longitude,
-    hasAccuracy: location.accuracy !== undefined,
-    hasHeading: location.heading !== undefined,
-    hasSpeed: location.speed !== undefined,
-  });
+  if (__DEV_MODE__) {
+    logger.debug("🛑 Ending shift with location:", {
+      source: locationOverride ? "override" : storedLocation ? "AsyncStorage" : "default",
+      latitude: location.latitude,
+      longitude: location.longitude,
+    });
+  }
 
   const payload = {
     location: {
@@ -129,50 +153,54 @@ export const endDriverShift = async (
     },
   };
 
-  console.log("📤 Sending end shift payload:", JSON.stringify(payload));
-
+  // Invalidate caches when ending shift
+  apiRequestManager.invalidatePattern('shift');
+  
   const response = await httpClient.post<{
     success: boolean;
     data: ShiftStartResponse | null;
   }>("/mobile/driver/shift/end", payload);
   
-  console.log("✅ Shift ended successfully:", response.data);
+  if (__DEV_MODE__) {
+    logger.debug("✅ Shift ended successfully");
+  }
   return response.data.data || null;
 };
 
 export const fetchCurrentShift = async (): Promise<ActiveShift | null> => {
-  const response = await httpClient.get<{
-    success: boolean;
-    data: ShiftCurrentResponse;
-  }>("/mobile/driver/shift/current");
-  return response.data.data?.hasActiveShift
-    ? (response.data.data.shift ?? null)
-    : null;
+  return apiRequestManager.request(
+    '/mobile/driver/shift/current',
+    async () => {
+      const response = await httpClient.get<{
+        success: boolean;
+        data: ShiftCurrentResponse;
+      }>("/mobile/driver/shift/current");
+      return response.data.data?.hasActiveShift
+        ? (response.data.data.shift ?? null)
+        : null;
+    },
+    undefined,
+    { cacheTtl: 10000 } // Cache for 10 seconds
+  );
 };
 
 export const fetchRecentJobs = async (
   limit = 3
 ): Promise<RecentJobSummary[]> => {
-  const response = await httpClient.get<{
-    success: boolean;
-    data: RecentJobSummary[];
-  }>("/mobile/driver/jobs/recent", {
-    params: { limit },
-  });
-
-  const summaries = response.data.data ?? [];
-  console.log(
-    "📥 Recent jobs response:",
-    JSON.stringify(
-      {
-        count: summaries.length,
-        items: summaries,
-      },
-      null,
-      2
-    )
+  return apiRequestManager.request(
+    '/mobile/driver/jobs/recent',
+    async () => {
+      const response = await httpClient.get<{
+        success: boolean;
+        data: RecentJobSummary[];
+      }>("/mobile/driver/jobs/recent", {
+        params: { limit },
+      });
+      return response.data.data ?? [];
+    },
+    { limit },
+    { cacheTtl: 30000 } // Cache for 30 seconds
   );
-  return summaries;
 };
 
 export type DriverShiftStatus = "AVAILABLE" | "BUSY" | "AWAY";
