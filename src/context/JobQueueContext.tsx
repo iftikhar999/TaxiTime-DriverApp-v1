@@ -285,14 +285,11 @@ export const JobQueueProvider: React.FC<{ children: React.ReactNode }> = ({
     
     try {
       // Notify backend that driver wants to hold this job
-      // This can be used to temporarily reserve the job
+      // This MUST succeed to prevent double-assignment
       await httpClient.post(`/mobile/driver/jobs/${job.id}/queue`, {
         driverId: driver?.id,
         queuedAt: new Date().toISOString(),
         currentJobId: currentJob?.id,
-      }).catch(err => {
-        // Log but don't fail - backend endpoint may not exist yet
-        console.warn('[JobQueue] Backend queue API not available:', err.message);
       });
       
       const queuedJobData: QueuedJob = {
@@ -314,8 +311,8 @@ export const JobQueueProvider: React.FC<{ children: React.ReactNode }> = ({
       return true;
       
     } catch (error: any) {
-      console.error('[JobQueue] ❌ Failed to queue job:', error.message);
-      setQueueError('Failed to queue job');
+      console.error('[JobQueue] ❌ Failed to queue job:', error.message || error);
+      setQueueError(error.message || 'Failed to queue job');
       return false;
     }
   }, [canQueueJob, location, driver?.id, currentJob?.id]);
@@ -527,28 +524,86 @@ export const JobQueueProvider: React.FC<{ children: React.ReactNode }> = ({
   
   /**
    * Auto-start queued job when current job is completed
+   * ✅ FIX: Start immediately (no delay) and capture ref before race condition
    */
   useEffect(() => {
     // Check if job just completed and we have a queued job
     if (status === 'COMPLETED' && queuedJobRef.current) {
-      console.log('[JobQueue] 🎯 Current job completed - starting queued job in 2 seconds...');
+      console.log('[JobQueue] 🎯 Current job completed - starting queued job immediately');
       
-      // Small delay to let completion flow finish
+      // Capture the queued job NOW before any race condition can clear it
+      const jobToAutoStart = queuedJobRef.current;
+      
+      // Start with minimal delay (just enough for React state updates)
       const timeout = setTimeout(() => {
-        startQueuedJob();
-      }, 2000);
+        // Double-check the ref still has the job (might have been cleared by server auto-start)
+        if (queuedJobRef.current || jobToAutoStart) {
+          startQueuedJob();
+        }
+      }, 500);
       
       return () => clearTimeout(timeout);
     }
   }, [status, startQueuedJob]);
   
   /**
-   * Clear queue when driver goes idle or cancels trip
+   * Listen for server-side queue auto-start
    */
   useEffect(() => {
-    if (status === 'IDLE' || status === 'CANCELLED' || status === 'REJECTED') {
+    const socket = getSocket();
+    if (!socket) return;
+    
+    const handleQueueAutoStarted = (data: any) => {
+      console.log('[JobQueue] 🎯 Server auto-started queued job:', data);
+      // Clear the queue since server handled it
+      setQueuedJob(null);
+      
+      // Set as incoming job so JobContext picks it up
+      if (data && data.jobId) {
+        setIncomingJob({
+          id: data.jobId,
+          jobId: data.publicJobId || data.jobId,
+          publicJobId: data.publicJobId || data.jobId,
+          status: data.status || 'ON_THE_WAY',
+          pickupAddress: data.pickupAddress,
+          pickupLatitude: data.pickupLatitude,
+          pickupLongitude: data.pickupLongitude,
+          dropoffAddress: data.dropoffAddress,
+          dropoffLatitude: data.dropoffLatitude,
+          dropoffLongitude: data.dropoffLongitude,
+          estimatedFare: data.estimatedFare,
+          passenger: data.customer,
+          vehicleType: data.vehicleType,
+          autoStartFromQueue: true,
+        });
+      }
+    };
+    
+    socket.on('job:queue:auto-started', handleQueueAutoStarted);
+    return () => {
+      socket.off('job:queue:auto-started', handleQueueAutoStarted);
+    };
+  }, [setIncomingJob]);
+  
+  /**
+   * Clear queue when driver goes idle or cancels trip
+   * ✅ FIX: Don't clear queue on IDLE if it was just COMPLETED (queue auto-start in progress)
+   */
+  const prevStatusRef = useRef(status);
+  useEffect(() => {
+    const prevStatus = prevStatusRef.current;
+    prevStatusRef.current = status;
+    
+    if (status === 'CANCELLED' || status === 'REJECTED') {
       if (queuedJob) {
         console.log('[JobQueue] 🗑️ Clearing queue - driver status:', status);
+        setQueuedJob(null);
+      }
+      setNearbyJobs([]);
+    } else if (status === 'IDLE') {
+      // ✅ Only clear queue on IDLE if NOT transitioning from COMPLETED (queue auto-start may be in progress)
+      if (queuedJob && prevStatus !== 'COMPLETED') {
+        console.log('[JobQueue] 🗑️ Clearing queue - driver went IDLE (not from completion)');
         setQueuedJob(null);
       }
       setNearbyJobs([]);

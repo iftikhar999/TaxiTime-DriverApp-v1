@@ -113,3 +113,70 @@ export const requestAllPermissions = async (): Promise<boolean> => {
     return false;
   }
 };
+
+// Camera runtime permission (needed before launchCamera on Android 6+).
+export const ensureCameraPermission = async (): Promise<boolean> => {
+  if (Platform.OS !== 'android') return true;
+  const perm = PermissionsAndroid.PERMISSIONS.CAMERA;
+  const already = await PermissionsAndroid.check(perm);
+  if (already) return true;
+  try {
+    const res = await PermissionsAndroid.request(perm, {
+      title: 'Camera access',
+      message: 'TaxiTime Driver needs camera access to capture document photos.',
+      buttonPositive: 'Allow',
+      buttonNegative: 'Deny',
+    });
+    if (res === PermissionsAndroid.RESULTS.GRANTED) return true;
+    Toast.show({
+      type: 'error',
+      text1: 'Camera blocked',
+      text2:
+        res === PermissionsAndroid.RESULTS.NEVER_ASK_AGAIN
+          ? 'Enable Camera for TaxiTime Driver in Settings → Apps, then try again.'
+          : 'Camera access was denied. Tap Allow next time to capture a photo.',
+      visibilityTime: 5000,
+    });
+    return false;
+  } catch (error) {
+    console.error('Camera permission request failed', error);
+    return false;
+  }
+};
+
+// Gallery / photo-library runtime permission. On Android 13+ (API 33) the
+// scoped READ_MEDIA_IMAGES replaces READ_EXTERNAL_STORAGE. react-native-image-
+// picker itself handles the picker intent, but if the OS prompts at all we
+// surface a clean, consistent toast on denial.
+export const ensureMediaLibraryPermission = async (): Promise<boolean> => {
+  if (Platform.OS !== 'android') return true;
+  const perm =
+    Platform.Version >= 33
+      ? PermissionsAndroid.PERMISSIONS.READ_MEDIA_IMAGES
+      : PermissionsAndroid.PERMISSIONS.READ_EXTERNAL_STORAGE;
+  if (!perm) return true;
+  const already = await PermissionsAndroid.check(perm);
+  if (already) return true;
+  try {
+    const res = await PermissionsAndroid.request(perm, {
+      title: 'Photos access',
+      message: 'TaxiTime Driver needs access to your photos so you can attach documents.',
+      buttonPositive: 'Allow',
+      buttonNegative: 'Deny',
+    });
+    if (res === PermissionsAndroid.RESULTS.GRANTED) return true;
+    Toast.show({
+      type: 'error',
+      text1: 'Photos blocked',
+      text2:
+        res === PermissionsAndroid.RESULTS.NEVER_ASK_AGAIN
+          ? 'Enable Photos for TaxiTime Driver in Settings → Apps, then try again.'
+          : 'Photos access was denied. Tap Allow next time to pick an image.',
+      visibilityTime: 5000,
+    });
+    return false;
+  } catch (error) {
+    console.error('Media permission request failed', error);
+    return false;
+  }
+};

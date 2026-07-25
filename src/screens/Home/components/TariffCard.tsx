@@ -22,12 +22,12 @@ export const TariffCard: React.FC<TariffCardProps> = ({
 }) => {
   const hasTariff = Boolean(tariffName);
   const summaryText = hasTariff
-    ? `Tariff · ${tariffName}  •  Base ${formatCurrency(
-        baseFare || 0
-      )}  •  Km ${formatCurrency(perKm || 0)}  •  Min ${formatCurrency(
-        perMinute || 0
-      )}`
-    : "Select a tariff to update pricing";
+    ? `${tariffName}`
+    : "Select a tariff";
+
+  const rateText = hasTariff
+    ? `${formatCurrency(baseFare || 0)} base  ·  ${formatCurrency(perKm || 0)}/km  ·  ${formatCurrency(perMinute || 0)}/min`
+    : "Tap to choose pricing";
 
   return (
     <TouchableOpacity
@@ -42,9 +42,14 @@ export const TariffCard: React.FC<TariffCardProps> = ({
         <View style={styles.iconContainer}>
           <MCIcon name="currency-usd" size={14} color={Colors.accent.highlight} />
         </View>
-        <Text style={styles.summaryText} numberOfLines={1}>
-          {summaryText}
-        </Text>
+        <View style={styles.textContent}>
+          <Text style={styles.tariffName} numberOfLines={1}>
+            {summaryText}
+          </Text>
+          <Text style={styles.rateText} numberOfLines={1}>
+            {rateText}
+          </Text>
+        </View>
       </View>
       {onPress ? (
         <MCIcon name="chevron-right" size={16} color="#8d95ad" />
@@ -83,11 +88,19 @@ const styles = StyleSheet.create({
     alignItems: "center",
     marginRight: 8,
   },
-  summaryText: {
+  textContent: {
     flex: 1,
-    fontSize: 11,
+  },
+  tariffName: {
+    fontSize: 12,
     fontWeight: "700",
     color: "#ffffff",
     letterSpacing: 0.2,
+  },
+  rateText: {
+    fontSize: 10,
+    fontWeight: "500",
+    color: "#8d95ad",
+    marginTop: 1,
   },
 });

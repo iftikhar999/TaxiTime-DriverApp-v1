@@ -1,6 +1,5 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
-  ActionSheetIOS,
   Alert,
   Linking,
   Platform,
@@ -11,10 +10,20 @@ import {
   ViewStyle,
 } from "react-native";
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE, Region } from "react-native-maps";
-import MapViewDirections from "react-native-maps-directions";
 import MaterialCommunityIcons from "react-native-vector-icons/MaterialCommunityIcons";
 import { Colors } from "../theme/colors";
-import { GOOGLE_MAPS_API_KEY } from "../config/maps";
+import { fetchOsrmRoute } from "../services/osrmRoutingService";
+
+const haversineKm = (a: { latitude: number; longitude: number }, b: { latitude: number; longitude: number }) => {
+  const R = 6371;
+  const toRad = (d: number) => (d * Math.PI) / 180;
+  const dLat = toRad(b.latitude - a.latitude);
+  const dLng = toRad(b.longitude - a.longitude);
+  const lat1 = toRad(a.latitude);
+  const lat2 = toRad(b.latitude);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+};
 
 type CoordinateInput = {
   latitude?: number | null;
@@ -92,6 +101,51 @@ const JobOfferMap: React.FC<JobOfferMapProps> = ({
 }) => {
   const [routeDistance, setRouteDistance] = useState<number | null>(null);
   const [routeDuration, setRouteDuration] = useState<number | null>(null);
+  const [osrmPath, setOsrmPath] = useState<Array<{ latitude: number; longitude: number }> | null>(null);
+
+  const showRoute = hasValidCoordinate(driver) && hasValidCoordinate(pickup);
+  const routeKey = useMemo(() => {
+    if (!showRoute) return null;
+    const round = (n: number) => Math.round(n * 1000) / 1000;
+    return `${round(driver!.latitude!)},${round(driver!.longitude!)}|${round(pickup!.latitude!)},${round(pickup!.longitude!)}`;
+  }, [showRoute, driver, pickup]);
+
+  useEffect(() => {
+    if (!routeKey || !showRoute) {
+      setOsrmPath(null);
+      setRouteDistance(null);
+      setRouteDuration(null);
+      return;
+    }
+    const controller = new AbortController();
+    const waypoints = [
+      { latitude: driver!.latitude!, longitude: driver!.longitude! },
+      { latitude: pickup!.latitude!, longitude: pickup!.longitude! },
+    ];
+    fetchOsrmRoute(waypoints, { signal: controller.signal })
+      .then((r) => {
+        if (!r) return;
+        setOsrmPath(r.coordinates);
+        const distanceKm = r.distanceMeters / 1000;
+        const durationMin = r.durationSeconds / 60;
+        setRouteDistance(distanceKm);
+        setRouteDuration(durationMin);
+        onRouteStats?.({ distanceKm, durationMin });
+      })
+      .catch((err) => {
+        if ((err as Error).name === "AbortError") return;
+        console.warn("OSRM route fetch failed:", err);
+        // Fallback to straight-line estimate so UI isn't empty.
+        const distanceKm = haversineKm(
+          { latitude: driver!.latitude!, longitude: driver!.longitude! },
+          { latitude: pickup!.latitude!, longitude: pickup!.longitude! },
+        );
+        setRouteDistance(distanceKm);
+        setRouteDuration(distanceKm * 2); // rough ~30 km/h city avg
+        onRouteStats?.({ distanceKm, durationMin: distanceKm * 2 });
+      });
+    return () => controller.abort();
+  }, [routeKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const points = useMemo(() => {
     const coords: Array<{ latitude: number; longitude: number }> = [];
@@ -106,7 +160,63 @@ const JobOfferMap: React.FC<JobOfferMapProps> = ({
 
   const region = useMemo(() => buildRegion(points), [points]);
 
-  const showMap = hasValidCoordinate(pickup) && hasValidCoordinate(driver);
+  const showMap = hasValidCoordinate(pickup); // Show map if at least pickup is available
+
+  // Imperatively re-fit the map whenever the relevant coords change.
+  // `initialRegion` only applies on first mount, so the previous code
+  // could leave the map stuck on the default Auckland region if pickup/
+  // driver arrived after mount. Using fitToCoordinates with explicit
+  // padding gives the Uber-style "both pins visible with the route
+  // arcing between them" framing the user wants.
+  const mapRef = useRef<MapView | null>(null);
+  useEffect(() => {
+    if (!mapRef.current) return;
+    if (!showMap) return;
+
+    // Build the set we want to be visible: driver + pickup + every node
+    // along the OSRM polyline (so the curve isn't cropped).
+    const fitCoords: Array<{ latitude: number; longitude: number }> = [];
+    if (hasValidCoordinate(pickup)) {
+      fitCoords.push({ latitude: pickup.latitude, longitude: pickup.longitude });
+    }
+    if (hasValidCoordinate(driver)) {
+      fitCoords.push({ latitude: driver.latitude, longitude: driver.longitude });
+    }
+    if (osrmPath && osrmPath.length >= 2) {
+      for (const c of osrmPath) fitCoords.push(c);
+    }
+    if (fitCoords.length === 0) return;
+
+    if (fitCoords.length === 1) {
+      mapRef.current.animateToRegion(
+        {
+          latitude: fitCoords[0].latitude,
+          longitude: fitCoords[0].longitude,
+          latitudeDelta: 0.01,
+          longitudeDelta: 0.01,
+        },
+        300
+      );
+      return;
+    }
+
+    // Slight delay so the MapView has finished its first layout pass on
+    // Android — fitToCoordinates before layout is a no-op on some devices.
+    const id = setTimeout(() => {
+      mapRef.current?.fitToCoordinates(fitCoords, {
+        edgePadding: { top: 70, right: 50, bottom: 70, left: 50 },
+        animated: true,
+      });
+    }, 120);
+    return () => clearTimeout(id);
+  }, [
+    showMap,
+    pickup?.latitude,
+    pickup?.longitude,
+    driver?.latitude,
+    driver?.longitude,
+    osrmPath,
+  ]);
 
   const alternateRoute = useMemo(() => {
     if (!showAlternateRoute || !hasValidCoordinate(pickup) || !hasValidCoordinate(driver)) {
@@ -125,96 +235,27 @@ const JobOfferMap: React.FC<JobOfferMapProps> = ({
     ];
   }, [pickup, driver, showAlternateRoute]);
 
-  const openGoogleMaps = () => {
-    if (!hasValidCoordinate(pickup)) {
-      Alert.alert("Error", "Pickup location not available");
-      return;
-    }
-
-    const url = Platform.select({
-      ios: `comgooglemaps://?daddr=${pickup.latitude},${pickup.longitude}&directionsmode=driving`,
-      android: `google.navigation:q=${pickup.latitude},${pickup.longitude}&mode=d`,
-    });
-
-    const fallbackUrl = `https://www.google.com/maps/dir/?api=1&destination=${pickup.latitude},${pickup.longitude}&travelmode=driving`;
-
-    if (url) {
-      Linking.canOpenURL(url)
-        .then((supported) => {
-          if (supported) {
-            return Linking.openURL(url);
-          } else {
-            return Linking.openURL(fallbackUrl);
-          }
-        })
-        .catch((err) => {
-          console.error("Error opening Google Maps:", err);
-          Linking.openURL(fallbackUrl);
-        });
-    }
-  };
-
-const openWaze = () => {
-  if (!hasValidCoordinate(pickup)) {
-    Alert.alert("Error", "Pickup location not available");
-    return;
-  }
-
-    const url = `https://waze.com/ul?ll=${pickup.latitude},${pickup.longitude}&navigate=yes`;
-
-    Linking.canOpenURL(url)
-      .then((supported) => {
-        if (supported) {
-          return Linking.openURL(url);
-        } else {
-          Alert.alert(
-            "Waze Not Installed",
-            "Please install the Waze app to use this feature.",
-            [{ text: "OK" }]
-          );
-        }
-      })
-      .catch((err) => {
-        console.error("Error opening Waze:", err);
-        Alert.alert("Error", "Could not open Waze");
-      });
-  };
-
-  const openAppleMaps = () => {
-    if (!hasValidCoordinate(pickup)) {
-      Alert.alert("Error", "Pickup location not available");
-      return;
-    }
-    const url = `http://maps.apple.com/?daddr=${pickup.latitude},${pickup.longitude}&dirflg=d`;
-    Linking.openURL(url).catch(() => Alert.alert("Error", "Could not open Apple Maps"));
-  };
-
   const handleNavigationSelection = () => {
     if (!hasValidCoordinate(pickup)) {
       Alert.alert("Error", "Pickup location not available");
       return;
     }
 
-    if (Platform.OS === "ios") {
-      ActionSheetIOS.showActionSheetWithOptions(
-        {
-          title: "Navigate with",
-          options: ["Google Maps", "Waze", "Apple Maps", "Cancel"],
-          cancelButtonIndex: 3,
-        },
-        (buttonIndex) => {
-          if (buttonIndex === 0) openGoogleMaps();
-          if (buttonIndex === 1) openWaze();
-          if (buttonIndex === 2) openAppleMaps();
-        }
-      );
-    } else {
-      Alert.alert("Choose Navigation App", undefined, [
-        { text: "Google Maps", onPress: openGoogleMaps },
-        { text: "Waze", onPress: openWaze },
-        { text: "Cancel", style: "cancel" },
-      ]);
-    }
+    // Use native device navigation app chooser
+    // This will show all installed navigation apps (Google Maps, Waze, Apple Maps, etc.)
+    const lat = pickup.latitude;
+    const lng = pickup.longitude;
+    
+    // Universal geo URI that triggers native app picker
+    const geoUri = Platform.OS === 'ios' 
+      ? `maps:0,0?q=${lat},${lng}` // iOS format
+      : `geo:0,0?q=${lat},${lng}`; // Android format
+    
+    Linking.openURL(geoUri).catch(() => {
+      // Fallback to Google Maps web if no navigation app installed
+      const fallbackUrl = `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}`;
+      Linking.openURL(fallbackUrl);
+    });
   };
 
   return (
@@ -232,6 +273,7 @@ const openWaze = () => {
             </TouchableOpacity>
           )}
           <MapView
+            ref={mapRef}
             provider={PROVIDER_GOOGLE}
             style={StyleSheet.absoluteFill}
             initialRegion={region}
@@ -243,58 +285,73 @@ const openWaze = () => {
             showsMyLocationButton={false}
             showsCompass={false}
             showsTraffic={false}
+            // Re-fit once the map has actually finished laying out on Android.
+            // Without this, the very first fit attempt can fire before the
+            // tile surface is ready and silently no-op.
+            onMapReady={() => {
+              if (!mapRef.current) return;
+              const coords: Array<{ latitude: number; longitude: number }> = [];
+              if (hasValidCoordinate(pickup)) {
+                coords.push({ latitude: pickup.latitude, longitude: pickup.longitude });
+              }
+              if (hasValidCoordinate(driver)) {
+                coords.push({ latitude: driver.latitude, longitude: driver.longitude });
+              }
+              if (coords.length >= 2) {
+                mapRef.current.fitToCoordinates(coords, {
+                  edgePadding: { top: 70, right: 50, bottom: 70, left: 50 },
+                  animated: false,
+                });
+              }
+            }}
           >
-            {/* Driver Marker */}
-            <Marker 
-              coordinate={{ latitude: driver.latitude!, longitude: driver.longitude! }} 
-              title="Your Location"
-              anchor={{ x: 0.5, y: 0.5 }}
-            >
-              <View style={styles.driverMarker}>
-                <MaterialCommunityIcons name="navigation-variant" size={20} color="#fff" />
-              </View>
-            </Marker>
+            {/* Driver Marker - Only show when driver location is available */}
+            {hasValidCoordinate(driver) && (
+              <Marker 
+                coordinate={{ latitude: driver.latitude!, longitude: driver.longitude! }} 
+                title="Your Location"
+                anchor={{ x: 0.5, y: 0.5 }}
+              >
+                <View style={styles.driverMarker}>
+                  <MaterialCommunityIcons name="navigation-variant" size={20} color="#fff" />
+                </View>
+              </Marker>
+            )}
 
             {/* Pickup Marker */}
-            <Marker
-              coordinate={{ latitude: pickup.latitude!, longitude: pickup.longitude! }}
-              title="Pickup Location"
-              pinColor="#22c55e"
-            >
-              <View style={styles.pickupMarker}>
-                <MaterialCommunityIcons name="map-marker" size={28} color="#22c55e" />
-              </View>
-            </Marker>
+            {hasValidCoordinate(pickup) && (
+              <Marker
+                coordinate={{ latitude: pickup.latitude!, longitude: pickup.longitude! }}
+                title="Customer Location"
+                anchor={{ x: 0.5, y: 0.5 }}
+              >
+                <View style={styles.pickupMarker}>
+                  <MaterialCommunityIcons name="account-circle" size={32} color="#22c55e" />
+                </View>
+              </Marker>
+            )}
 
-            {/* Route Directions */}
-            <MapViewDirections
-              origin={{
-                latitude: driver.latitude!,
-                longitude: driver.longitude!,
-              }}
-              destination={{
-                latitude: pickup.latitude!,
-                longitude: pickup.longitude!,
-              }}
-              apikey={GOOGLE_MAPS_API_KEY}
-              strokeWidth={4}
-              strokeColor="#3b82f6"
-              lineDashPattern={[0]}
-              lineCap="round"
-              lineJoin="round"
-              optimizeWaypoints={true}
-              onReady={(result) => {
-                setRouteDistance(result.distance);
-                setRouteDuration(result.duration);
-                onRouteStats?.({
-                  distanceKm: result.distance,
-                  durationMin: result.duration,
-                });
-              }}
-              onError={(errorMessage) => {
-                console.warn("Directions Error:", errorMessage);
-              }}
-            />
+            {/* Road-following route via free OSRM. Uber-style stroked look. */}
+            {showRoute && osrmPath && osrmPath.length >= 2 && (
+              <>
+                <Polyline
+                  coordinates={osrmPath}
+                  strokeColor="#1e3a8a"
+                  strokeWidth={9}
+                  lineCap="round"
+                  lineJoin="round"
+                  zIndex={1}
+                />
+                <Polyline
+                  coordinates={osrmPath}
+                  strokeColor="#3b82f6"
+                  strokeWidth={6}
+                  lineCap="round"
+                  lineJoin="round"
+                  zIndex={2}
+                />
+              </>
+            )}
 
             {alternateRoute && (
               <Polyline

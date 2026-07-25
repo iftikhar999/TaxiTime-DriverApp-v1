@@ -8,6 +8,9 @@ require Pod::Executable.execute_command('node', ['-p',
 platform :ios, min_ios_version_supported
 prepare_react_native_project!
 
+# Fix Swift pod compatibility
+use_modular_headers!
+
 linkage = ENV['USE_FRAMEWORKS']
 if linkage != nil
   Pod::UI.puts "Configuring Pod with #{linkage}ally linked Frameworks".green
@@ -31,5 +34,26 @@ target 'DriverAppV1Template' do
       :mac_catalyst_enabled => false,
       # :ccache_enabled => true
     )
+
+    # react-native-config: inject "Config node_modules/react-native-config"
+    # build phase so .env is baked into the app bundle at build time.
+    dotenv_script = '"${SRCROOT}/../node_modules/react-native-config/ios/ReactNativeConfig/BuildDotenvConfig.ruby.sh"'
+    installer.pods_project.targets.each do |target|
+      # no-op on pod targets
+    end
+    project = Xcodeproj::Project.open(File.join(__dir__, 'DriverAppV1Template.xcodeproj'))
+    project.targets.each do |target|
+      next unless target.name == 'DriverAppV1Template'
+      existing = target.shell_script_build_phases.find { |p| p.name == 'Config node_modules/react-native-config' }
+      unless existing
+        phase = target.new_shell_script_build_phase('Config node_modules/react-native-config')
+        phase.shell_script = dotenv_script
+        phase.show_env_vars_in_log = '0'
+        # Move to near the top (after [CP] Check Pods Manifest.lock if present)
+        target.build_phases.delete(phase)
+        target.build_phases.insert(1, phase)
+      end
+    end
+    project.save
   end
 end

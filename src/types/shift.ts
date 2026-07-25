@@ -55,7 +55,7 @@ export interface ShiftCurrentResponse {
 
 export interface StartShiftPayload {
   vehicleId: string;
-  tariffId: string;
+  tariffId?: string;
   location: {
     latitude: number;
     longitude: number;

@@ -36,26 +36,60 @@ export const PERFORMANCE_CONFIG = {
 // ============================================
 // SERVER CONFIGURATION
 // ============================================
+//
+// API_BASE_URL / SOCKET_BASE_URL are driven by an env var so we never ship a
+// hard-coded production IP. In release builds the env MUST be provided via
+// react-native-config (see .env.example); we fail loudly at boot if it isn't.
+//
+// DEV default: Android emulator host loopback (10.0.2.2). Override via
+// API_BASE_URL in .env for a physical device (e.g. http://192.168.x.x:3000).
 
-// For Physical Device (connected via WiFi - use laptop IP)
-// export const API_BASE_URL = "http://192.168.1.48:3000/api";
-// export const SOCKET_BASE_URL = "http://192.168.1.48:3000";
+let envApiBase: string | undefined;
+try {
+  // react-native-config loads values from android/app/build.gradle (buildConfigField)
+  // or ios Info.plist at build time. The import is optional: absence is tolerated
+  // in DEV so the app still boots on a fresh clone.
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const Config = require("react-native-config").default ?? require("react-native-config");
+  envApiBase = Config?.API_BASE_URL;
+} catch {
+  envApiBase = undefined;
+}
 
-// For Android Emulator (LOCAL DEVELOPMENT)
-// export const API_BASE_URL = "http://10.0.2.2:3000/api";
-// export const SOCKET_BASE_URL = "http://10.0.2.2:3000";
+const DEV_DEFAULT_BASE = "http://10.0.2.2:3000";
 
-// LOCAL DEVELOPMENT - Physical Device via USB (adb reverse tcp:3000 tcp:3000)
-export const API_BASE_URL = "http://localhost:3000/api";
-export const SOCKET_BASE_URL = "http://localhost:3000";
+const resolveBase = (): string => {
+  const trimmed = typeof envApiBase === "string" ? envApiBase.trim() : "";
+  if (trimmed.length > 0) {
+    return trimmed.replace(/\/$/, "");
+  }
+  if (__DEV__) {
+    console.warn(
+      "[env] API_BASE_URL not set — falling back to DEV default " +
+        DEV_DEFAULT_BASE +
+        ". Copy .env.example to .env to override."
+    );
+    return DEV_DEFAULT_BASE;
+  }
+  throw new Error(
+    "[env] API_BASE_URL is required in production builds. " +
+      "Add it to .env and rebuild with react-native-config."
+  );
+};
 
-// PRODUCTION SERVER
-// export const API_BASE_URL = "http://54.252.241.150/api";
-// export const SOCKET_BASE_URL = "http://54.252.241.150";
+const BASE = resolveBase();
 
-export const DEFAULT_DRIVER_CREDENTIALS = {
+export const API_BASE_URL = `${BASE}/api`;
+export const SOCKET_BASE_URL = BASE;
+
+// Pre-fill login with the test driver account. Before this was gated behind
+// __DEV__ (release builds started blank); the app isn't publicly launched yet
+// and the user wants these filled in so internal testers can sign in without
+// retyping. Revisit before the public launch — hard-coded creds should not
+// ship to real customers.
+export const DEFAULT_DRIVER_CREDENTIALS: { email: string; password: string } = {
   email: "driver1@city001.com",
-  password: "111111",
+  password: "123123123",
 };
 
 // ============================================

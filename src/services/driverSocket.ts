@@ -2,6 +2,7 @@ import { io, Socket } from "socket.io-client";
 import { SOCKET_BASE_URL } from "../config/environment";
 import type { LocationUpdate } from "../native/locationService";
 import { offlineEventQueue, QueuedEvent } from "./offlineEventQueue";
+import { NativeModules } from "react-native";
 
 /**
  * ✅ UNIFIED INTERVAL CONTROL - DATABASE DRIVEN
@@ -58,7 +59,18 @@ let HEARTBEAT_INTERVAL_MS = 30000; // Default 30s, updated from database via upd
 
 let socket: Socket | null = null;
 let currentDriver: DriverSocketConfig | null = null;
+
+// 🆕 Module-level active job tracker — set by JobContext whenever the driver's
+// active job changes. Used by emitDriverLocation so location pings include
+// a jobId and can be routed to the passenger's /customer socket room.
+let activeJobIdForLocation: string | null = null;
+export const setActiveJobIdForLocation = (jobId: string | null) => {
+  activeJobIdForLocation = jobId;
+};
 let authenticated = false;
+// Fallback so we still authenticate against an older server that doesn't send
+// the `authenticated` ack — set optimistically after this delay if no ack.
+let authFallbackTimer: ReturnType<typeof setTimeout> | null = null;
 let lastLocationSentAt = 0;
 let heartbeatInterval: ReturnType<typeof setInterval> | null = null;
 let lastHeartbeatSentAt = 0;
@@ -68,6 +80,9 @@ let reconnectAttempt = 0;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let maxReconnectDelay = 60000; // Max 60 seconds between retries
 let shiftRestorationCallback: (() => Promise<void>) | null = null;
+let lastConnectionAttempt = 0;
+let connectionInProgress = false;
+const MIN_CONNECTION_INTERVAL = 3000; // Minimum 3 seconds between connection attempts
 const generateEventId = () =>
   `evt_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
@@ -119,6 +134,32 @@ export const updateSocketIntervals = (
 export const getCurrentThrottleMs = () => LOCATION_THROTTLE_MS;
 
 /**
+ * ✅ SMART RECONNECT: Ensure socket is connected, authenticated, and in rooms.
+ * Called on app foreground, before critical operations, and periodically.
+ * This is the single source of truth for "is the driver reachable?"
+ */
+export const ensureConnected = (): boolean => {
+  if (!socket || !currentDriver) return false;
+
+  if (!socket.connected) {
+    console.log('🔌 ensureConnected: Socket disconnected — reconnecting...');
+    reconnectAttempt = 0;
+    socket.connect();
+    return false;
+  }
+
+  // Socket is connected but may not be authenticated (room not joined)
+  if (!authenticated) {
+    console.log('🔐 ensureConnected: Connected but not authenticated — re-authenticating...');
+    authenticateIfReady();
+    return false;
+  }
+
+  // Fully healthy
+  return true;
+};
+
+/**
  * Calculate exponential backoff delay with jitter
  */
 const getReconnectDelay = (attempt: number): number => {
@@ -165,9 +206,19 @@ const authenticateIfReady = () => {
       userId: currentDriver.driverId,
       companyId: currentDriver.companyId ?? undefined,
     });
-    authenticated = true;
-    
-    console.log("✅ Authentication event emitted");
+    // Do NOT assume success. Wait for the server `authenticated` ack (handled
+    // where the socket is created) before treating ourselves as in-room; that
+    // ack flips `authenticated`. Fallback: if no ack arrives shortly (older
+    // server), set it optimistically so we don't stay stuck unauthenticated.
+    if (authFallbackTimer) clearTimeout(authFallbackTimer);
+    authFallbackTimer = setTimeout(() => {
+      if (!authenticated) {
+        console.warn("⚠️ No auth ack received — assuming authenticated (fallback)");
+        authenticated = true;
+      }
+    }, 3000);
+
+    console.log("✅ Authentication event emitted (awaiting ack)");
   } else {
     console.warn("⚠️ Cannot authenticate:", {
       hasSocket: !!socket,
@@ -193,6 +244,12 @@ export const registerShiftRestoration = (callback: () => Promise<void>) => {
 // ✅ FIX: Support multiple callbacks (ShiftContext + JobContext)
 let driverStateRestorationCallbacks: Array<(state: any) => void> = [];
 
+// ✅ NEW: Job assignment callback for real-time job notifications
+let jobAssignedCallbacks: Array<(job: any) => void> = [];
+
+// ✅ NEW: Job unassignment/recall callback for when job is taken back
+let jobUnassignedCallbacks = new Set<(data: any) => void>();
+
 /**
  * Register a callback to receive complete driver state from server
  * Server sends: shift, vehicle, tariff, and active job (if any)
@@ -212,6 +269,42 @@ export const registerDriverStateRestoration = (callback: (state: any) => void) =
 export const unregisterDriverStateRestoration = (callback: (state: any) => void) => {
   driverStateRestorationCallbacks = driverStateRestorationCallbacks.filter(cb => cb !== callback);
   console.log(`🧹 Driver state restoration callback unregistered (remaining: ${driverStateRestorationCallbacks.length})`);
+};
+
+/**
+ * ✅ NEW: Register a callback for new job assignments
+ * Called when server emits 'job_assigned' event
+ */
+export const registerJobAssignedCallback = (callback: (job: any) => void) => {
+  if (!jobAssignedCallbacks.includes(callback)) {
+    jobAssignedCallbacks.push(callback);
+    console.log(`✅ Job assigned callback registered (total: ${jobAssignedCallbacks.length})`);
+  }
+};
+
+/**
+ * ✅ NEW: Unregister a job assigned callback
+ */
+export const unregisterJobAssignedCallback = (callback: (job: any) => void) => {
+  jobAssignedCallbacks = jobAssignedCallbacks.filter(cb => cb !== callback);
+  console.log(`🧹 Job assigned callback unregistered (remaining: ${jobAssignedCallbacks.length})`);
+};
+
+/**
+ * ✅ NEW: Register a callback for job unassignment/recall
+ * Called when dispatch takes back job or job is cancelled
+ */
+export const registerJobUnassignedCallback = (callback: (data: any) => void) => {
+  jobUnassignedCallbacks.add(callback);
+  console.log(`✅ Job unassigned callback registered (total: ${jobUnassignedCallbacks.size})`);
+};
+
+/**
+ * ✅ NEW: Unregister a job unassigned callback
+ */
+export const unregisterJobUnassignedCallback = (callback: (data: any) => void) => {
+  jobUnassignedCallbacks.delete(callback);
+  console.log(`🧹 Job unassigned callback unregistered (remaining: ${jobUnassignedCallbacks.size})`);
 };
 
 /**
@@ -235,9 +328,31 @@ export const ensureDriverSocket = (config: DriverSocketConfig): Socket => {
   // Initialize offline queue
   offlineEventQueue.initialize().catch(console.error);
 
+  // 🛡️ CRASH PROTECTION: Prevent rapid reconnection attempts
+  const now = Date.now();
+  if (connectionInProgress) {
+    console.log("⚠️ Connection already in progress, returning existing socket");
+    return socket!;
+  }
+  
+  // The rapid-reconnect cooldown only applies when a socket already exists.
+  // Previously, when it fired with NO socket yet, it created a bare
+  // `autoConnect:false` socket with NO event handlers and returned it — a
+  // socket that could connect but never authenticate or receive `job_assigned`
+  // (silently missed offers). If there's no socket, fall through and build the
+  // real one (handlers attached) instead of a handler-less placeholder.
+  if (now - lastConnectionAttempt < MIN_CONNECTION_INTERVAL && socket) {
+    console.log("⏳ Connection attempted too soon; returning existing socket");
+    return socket;
+  }
+
+  lastConnectionAttempt = now;
+
   if (socket) {
     if (!socket.connected) {
+      connectionInProgress = true;
       socket.connect();
+      setTimeout(() => { connectionInProgress = false; }, 2000);
     } else if (!authenticated) {
       // ✅ FIX: Only authenticate if not already authenticated
       // This prevents double authentication when useEffect re-runs
@@ -249,19 +364,41 @@ export const ensureDriverSocket = (config: DriverSocketConfig): Socket => {
     return socket;
   }
 
+  connectionInProgress = true;
   socket = io(`${SOCKET_BASE_URL}/driver`, {
     transports: ["websocket"],
     forceNew: false,
     autoConnect: true,
-    reconnection: false, // We handle reconnection manually for better control
+    reconnection: true,
+    reconnectionAttempts: Infinity, // ✅ Never stop trying to reconnect
+    reconnectionDelay: 2000,
+    reconnectionDelayMax: 10000,
     timeout: 10000,
+  });
+
+  // Server ack for `authenticate` — the ONLY thing that should flip us to
+  // authenticated. Registered once on the fresh socket (survives reconnects
+  // since the same socket instance is reused).
+  socket.on("authenticated", () => {
+    authenticated = true;
+    if (authFallbackTimer) { clearTimeout(authFallbackTimer); authFallbackTimer = null; }
+    console.log("✅ Server confirmed authentication");
+  });
+
+  // Debug tap for job-ish events. Registered ONCE here (not inside `connect`,
+  // which re-added a new listener on every reconnect → listener/log leak).
+  socket.onAny((eventName: string, ...args: any[]) => {
+    if (eventName.includes('job') || eventName.includes('recall') || eventName.includes('unassign')) {
+      console.log(`🔔 SOCKET EVENT: ${eventName}`, JSON.stringify(args));
+    }
   });
 
   socket.on("connect", async () => {
     console.log("🟢 Socket connected successfully");
     isOnline = true;
     reconnectAttempt = 0; // Reset attempt counter on successful connection
-    
+    connectionInProgress = false; // Clear connection flag
+
     // Clear any pending reconnect timers
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);
@@ -428,6 +565,181 @@ export const ensureDriverSocket = (config: DriverSocketConfig): Socket => {
     console.log('⚠️ Driver kicked - forcing logout');
   });
 
+  // ✅ NEW: Listen for job assignment notifications
+  socket.on("job_assigned", async (jobData: any) => {
+    console.log('🎯 NEW JOB ASSIGNED:', {
+      jobId: jobData.id,
+      pickup: jobData.pickupAddress,
+      dropoff: jobData.dropoffAddress,
+      estimatedFare: jobData.estimatedPrice,
+      distance: jobData.estimatedDistance,
+    });
+    
+    // ✅ CRITICAL: Show full-screen notification for locked device (like incoming call)
+    try {
+      const { JobNotification } = NativeModules;
+      if (JobNotification) {
+        await JobNotification.showJobNotification(
+          jobData.id || jobData.jobId,
+          jobData.pickupAddress || 'Unknown pickup',
+          jobData.dropoffAddress || 'Unknown dropoff',
+          jobData.estimatedPrice ? `$${jobData.estimatedPrice.toFixed(2)}` : 'N/A'
+        );
+        console.log('🔔 Full-screen notification shown (works even on locked device)');
+      }
+    } catch (error) {
+      console.error('❌ Failed to show notification:', error);
+    }
+    
+    // ✅ CRITICAL: Bring app to foreground when job is assigned
+    try {
+      const { AppBringToFront } = NativeModules;
+      if (AppBringToFront) {
+        const result = await AppBringToFront.bringToFront();
+        console.log('📱 App brought to foreground:', result);
+      }
+    } catch (error) {
+      console.error('❌ Failed to bring app to foreground:', error);
+    }
+    
+    // Notify all registered callbacks
+    if (jobAssignedCallbacks.length > 0) {
+      console.log(`📢 Broadcasting job to ${jobAssignedCallbacks.length} callbacks`);
+      jobAssignedCallbacks.forEach((callback, index) => {
+        try {
+          callback(jobData);
+        } catch (error) {
+          console.error(`❌ Job callback ${index + 1} failed:`, error);
+        }
+      });
+    } else {
+      console.warn('⚠️ Job assigned but no callbacks registered to handle it');
+    }
+  });
+
+  // ✅ Listen for FCFS broadcast-offer closure. When one driver claims a
+  // broadcast job via POST /api/mobile/driver/jobs/:jobId/claim, the backend
+  // fan-outs this event to every OTHER driver so their offer modal dismisses.
+  // We reuse the same jobUnassignedCallbacks path because "offer closed" and
+  // "job cancelled" have identical UI effect for the losing drivers — hide
+  // the modal, bail on ringtones.
+  socket.on("job:offer:closed", (data: { jobId: string; internalJobId?: string; claimedBy?: string; reason?: string }) => {
+    console.log('🔒 JOB OFFER CLOSED (another driver claimed):', {
+      jobId: data.jobId,
+      claimedBy: data.claimedBy,
+    });
+    try {
+      const { JobNotification } = NativeModules;
+      if (JobNotification) {
+        JobNotification.cancelJobNotification();
+      }
+    } catch (_e) { /* non-fatal */ }
+    if (jobUnassignedCallbacks.size > 0) {
+      jobUnassignedCallbacks.forEach((callback, index) => {
+        try {
+          callback({ ...data, reason: data.reason || 'another_driver_claimed' });
+        } catch (error) {
+          console.error(`❌ Offer-closed callback ${index + 1} failed:`, error);
+        }
+      });
+    }
+  });
+
+  // ✅ Listen for job cancelled/removed notifications
+  socket.on("job:cancelled", (data: { jobId: string; internalJobId?: string; reason?: string }) => {
+    console.log('❌ JOB CANCELLED:', {
+      jobId: data.jobId,
+      internalJobId: data.internalJobId,
+      reason: data.reason || 'No reason provided',
+    });
+    
+    // Cancel the notification when job is cancelled
+    try {
+      const { JobNotification } = NativeModules;
+      if (JobNotification) {
+        JobNotification.cancelJobNotification();
+        console.log('🔕 Job notification cancelled');
+      }
+    } catch (error) {
+      console.error('❌ Failed to cancel notification:', error);
+    }
+    
+    // Trigger job unassignment callbacks
+    if (jobUnassignedCallbacks.size > 0) {
+      jobUnassignedCallbacks.forEach((callback, index) => {
+        try {
+          callback(data);
+        } catch (error) {
+          console.error(`❌ Job unassign callback ${index + 1} failed:`, error);
+        }
+      });
+    }
+  });
+
+  // ✅ Listen for job unassigned notifications (dispatch takes back job)
+  socket.on("job_unassigned", (data: { jobId: string; internalJobId?: string; reason?: string; message?: string }) => {
+    console.log('🔄 JOB UNASSIGNED (taken back by dispatch):', {
+      jobId: data.jobId,
+      internalJobId: data.internalJobId,
+      reason: data.reason || 'No reason provided',
+      message: data.message,
+    });
+    
+    // Cancel the notification when job is unassigned
+    try {
+      const { JobNotification } = NativeModules;
+      if (JobNotification) {
+        JobNotification.cancelJobNotification();
+        console.log('🔕 Job notification cancelled');
+      }
+    } catch (error) {
+      console.error('❌ Failed to cancel notification:', error);
+    }
+    
+    // Trigger job unassignment callbacks
+    if (jobUnassignedCallbacks.size > 0) {
+      jobUnassignedCallbacks.forEach((callback, index) => {
+        try {
+          callback(data);
+        } catch (error) {
+          console.error(`❌ Job unassign callback ${index + 1} failed:`, error);
+        }
+      });
+    }
+  });
+
+  // ✅ Listen for job recalled notifications (alternate event name)
+  socket.on("job:recalled", (data: { jobId: string; internalJobId?: string; reason?: string; message?: string }) => {
+    console.log('🔄 JOB RECALLED (taken back by dispatch):', {
+      jobId: data.jobId,
+      internalJobId: data.internalJobId,
+      reason: data.reason || 'No reason provided',
+      message: data.message,
+    });
+    
+    // Cancel the notification when job is recalled
+    try {
+      const { JobNotification } = NativeModules;
+      if (JobNotification) {
+        JobNotification.cancelJobNotification();
+        console.log('🔕 Job notification cancelled');
+      }
+    } catch (error) {
+      console.error('❌ Failed to cancel notification:', error);
+    }
+    
+    // Trigger job unassignment callbacks
+    if (jobUnassignedCallbacks.size > 0) {
+      jobUnassignedCallbacks.forEach((callback, index) => {
+        try {
+          callback(data);
+        } catch (error) {
+          console.error(`❌ Job unassign callback ${index + 1} failed:`, error);
+        }
+      });
+    }
+  });
+
   return socket;
 };
 
@@ -579,7 +891,11 @@ const smartEmit = async (
   console.log(`📥 Event queued (offline): ${eventName}`);
 };
 
-export const emitDriverLocation = (location: LocationUpdate, appState?: 'ACTIVE' | 'BACKGROUND' | 'INACTIVE') => {
+export const emitDriverLocation = (
+  location: LocationUpdate,
+  appState?: 'ACTIVE' | 'BACKGROUND' | 'INACTIVE',
+  activeJobId?: string | null,
+) => {
   // ✅ FIX: Add logging for silent failures
   if (!currentDriver) {
     console.warn('⚠️ Cannot emit location: No current driver set');
@@ -616,7 +932,7 @@ export const emitDriverLocation = (location: LocationUpdate, appState?: 'ACTIVE'
 
   lastLocationSentAt = now;
 
-  const payload = {
+  const payload: any = {
     driverId: currentDriver.driverId,
     location: {
       latitude: location.latitude,
@@ -628,6 +944,15 @@ export const emitDriverLocation = (location: LocationUpdate, appState?: 'ACTIVE'
     },
     appState: appState || 'ACTIVE', // ✨ NEW: Include app state (foreground/background)
   };
+
+  // 🆕 Include the active jobId so the backend can route this location update
+  // to the passenger's /customer socket room (`job_<jobId>`). Without this
+  // field the passenger never sees the driver move on the map even though
+  // the driver app is emitting regularly.
+  const jobIdToInclude = activeJobId ?? activeJobIdForLocation;
+  if (jobIdToInclude) {
+    payload.jobId = jobIdToInclude;
+  }
 
   // Smart emit - queues if offline
   smartEmit("driver:location:update", payload, "location");
@@ -649,10 +974,16 @@ export const emitDriverLocation = (location: LocationUpdate, appState?: 'ACTIVE'
 /**
  * Emit app state change to dispatcher
  * Notifies when driver app goes to background or comes back to foreground
+ * ✅ CRITICAL: Forces socket health check + reconnect on foreground return
  */
 export const emitAppStateChange = (appState: 'ACTIVE' | 'BACKGROUND' | 'INACTIVE') => {
   if (!currentDriver) return;
-  
+
+  // ✅ SMART RECONNECT: When app comes to foreground, verify socket is alive
+  if (appState === 'ACTIVE') {
+    ensureConnected();
+  }
+
   const payload = {
     driverId: currentDriver.driverId,
     appState,

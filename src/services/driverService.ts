@@ -203,6 +203,313 @@ export const fetchRecentJobs = async (
   );
 };
 
+/* ── Job History API ─────────────────────────────────── */
+
+export interface JobHistoryParams {
+  page?: number;
+  limit?: number;
+  status?: string;       // comma-separated e.g. "COMPLETED,CANCELLED,NO_SHOW"
+  startDate?: string;    // ISO 8601
+  endDate?: string;      // ISO 8601
+  paymentMethod?: string;
+}
+
+export interface JobHistoryResponse {
+  data: RecentJobSummary[];
+  pagination: {
+    page: number;
+    limit: number;
+    total: number;
+    totalPages: number;
+    hasMore: boolean;
+  };
+}
+
+/**
+ * Fetch paginated job history with server-side date / status / payment filters.
+ * Maps the /history response fields to the shared RecentJobSummary shape so
+ * existing UI components (RecentJobsSection) work without changes.
+ */
+export const fetchJobHistory = async (
+  params: JobHistoryParams = {}
+): Promise<JobHistoryResponse> => {
+  const {
+    page = 1,
+    limit = 50,
+    status = "COMPLETED,CANCELLED,NO_SHOW",
+    startDate,
+    endDate,
+    paymentMethod,
+  } = params;
+
+  const query: Record<string, string | number> = { page, limit, status };
+  if (startDate) query.startDate = startDate;
+  if (endDate) query.endDate = endDate;
+  if (paymentMethod) query.paymentMethod = paymentMethod;
+
+  const response = await httpClient.get<{
+    success: boolean;
+    data: any[];
+    pagination: JobHistoryResponse["pagination"];
+  }>("/mobile/driver/jobs/history", { params: query });
+
+  // Map /history response to RecentJobSummary shape
+  const jobs: RecentJobSummary[] = (response.data.data ?? []).map((j: any) => ({
+    id: j.id,
+    jobId: j.jobId,
+    status: j.status,
+    createdAt: j.createdAt ?? null,
+    startedAt: j.startedAt ?? null,
+    completedAt: j.completedAt ?? null,
+    pickup: j.pickup ?? { address: j.pickupAddress },
+    dropoff: j.dropoff ?? { address: j.dropoffAddress },
+    distanceKm: j.distanceKm ?? j.distance ?? null,
+    durationSeconds: j.durationSeconds ?? j.duration ?? null,
+    fare: {
+      currency: j.fare?.currency ?? "GBP",
+      total: j.fare?.actual ?? j.fare?.total ?? j.fare?.driverEarnings ?? 0,
+      driverEarnings: j.fare?.driverEarnings ?? j.fare?.actual ?? j.fare?.total ?? 0,
+    },
+    paymentMethod: j.paymentMethod ?? "UNKNOWN",
+    payment: j.payment
+      ? {
+          amount: j.payment.amount ?? 0,
+          driverEarnings: j.payment.driverEarnings ?? null,
+          status: j.payment.status ?? null,
+        }
+      : null,
+    passenger: j.passenger ?? j.customer ?? null,
+    statusTimeline: j.statusTimeline ?? null,
+  }));
+
+  return {
+    data: jobs,
+    pagination: response.data.pagination ?? {
+      page,
+      limit,
+      total: jobs.length,
+      totalPages: 1,
+      hasMore: false,
+    },
+  };
+};
+
+/* ── Earnings Summary API (for Wallet) ─────────────── */
+
+export interface EarningsSummaryParams {
+  period?: "today" | "week" | "month" | "all";
+  startDate?: string;
+  endDate?: string;
+}
+
+export const fetchEarningsSummary = async (
+  params: EarningsSummaryParams = {}
+): Promise<any> => {
+  const response = await httpClient.get<{
+    success: boolean;
+    data: any;
+  }>("/mobile/driver/earnings/summary", { params });
+  return response.data.data;
+};
+
+/* ── AsyncStorage Job History Cache ────────────────── */
+
+const JOB_HISTORY_CACHE_KEY = "cached_job_history";
+const JOB_HISTORY_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+/* ── Wallet / Settlement API ──────────────────────── */
+
+export interface WalletBalance {
+  driverType: 'CONTRACTOR' | 'EMPLOYEE';
+  commissionPct: number;
+  fixedPayPerRide: number | null;
+  weeklyRent: number;
+  payoutFrequency: string;
+  ownsVehicle: boolean;
+  currentPeriod: {
+    totalTrips: number;
+    totalFare: number;
+    cashCollected: number;
+    cardTotal: number;
+    eposTotal: number;
+    accountTotal: number;
+    commissionAmount: number;
+    fixedPayTotal: number;
+    driverOwesCompany: number;
+    companyOwesDriver: number;
+    netBalance: number;
+  };
+  previousUnpaid: number;
+  runningBalance: number;
+}
+
+export interface Settlement {
+  id: string;
+  periodStart: string;
+  periodEnd: string;
+  periodType: string;
+  totalTrips: number;
+  totalFare: number;
+  cashCollected: number;
+  cardTotal: number;
+  commissionAmount: number;
+  fixedPayTotal: number;
+  weeklyRent: number;
+  driverOwesCompany: number;
+  companyOwesDriver: number;
+  netBalance: number;
+  status: 'PENDING' | 'APPROVED' | 'PAID' | 'DISPUTED';
+  createdAt: string;
+  paidAt: string | null;
+}
+
+export const fetchWalletBalance = async (): Promise<WalletBalance> => {
+  const response = await httpClient.get<{ success: boolean; data: any }>(
+    "/mobile/driver/wallet/balance"
+  );
+  const raw = response.data.data;
+
+  // Map flat backend response to the nested WalletBalance shape
+  // Backend returns fields at root level; frontend expects currentPeriod nesting
+  return {
+    driverType: raw.driverType ?? 'CONTRACTOR',
+    commissionPct: raw.commissionPct ?? 0,
+    fixedPayPerRide: raw.fixedPayPerRide ?? null,
+    weeklyRent: raw.weeklyRent ?? 0,
+    payoutFrequency: raw.payoutFrequency ?? 'WEEKLY',
+    ownsVehicle: raw.ownsVehicle ?? false,
+    currentPeriod: {
+      totalTrips: raw.totalTrips ?? 0,
+      totalFare: raw.totalFare ?? 0,
+      cashCollected: raw.cashCollected ?? 0,
+      cardTotal: raw.cardTotal ?? 0,
+      eposTotal: raw.eposTotal ?? 0,
+      accountTotal: raw.accountTotal ?? 0,
+      commissionAmount: raw.commissionAmount ?? 0,
+      fixedPayTotal: raw.fixedPayTotal ?? 0,
+      driverOwesCompany: raw.driverOwesCompany ?? 0,
+      companyOwesDriver: raw.companyOwesDriver ?? 0,
+      netBalance: raw.netBalance ?? 0,
+    },
+    // Backend uses different field names
+    previousUnpaid: raw.carryForwardBalance ?? 0,
+    runningBalance: raw.totalBalance ?? raw.netBalance ?? 0,
+  };
+};
+
+export const fetchWalletSettlements = async (
+  params: { page?: number; limit?: number; status?: string } = {}
+): Promise<{ data: Settlement[]; pagination: any }> => {
+  const response = await httpClient.get<{
+    success: boolean;
+    data: Settlement[];
+    pagination: any;
+  }>("/mobile/driver/wallet/settlements", { params });
+  return { data: response.data.data, pagination: response.data.pagination };
+};
+
+export const fetchWalletConfig = async (): Promise<any> => {
+  const response = await httpClient.get<{ success: boolean; data: any }>(
+    "/mobile/driver/wallet/config"
+  );
+  return response.data.data;
+};
+
+/* ── Wallet Transaction Ledger ────────────────────── */
+
+export interface WalletTransaction {
+  id: string;
+  type: 'CREDIT' | 'DEBIT' | 'REFUND' | 'BONUS' | 'PENALTY' | 'COMMISSION';
+  amount: number;
+  currency: string;
+  description: string | null;
+  balanceBefore: number;
+  balanceAfter: number;
+  jobId: string | null;
+  paymentMethod: string | null;
+  createdAt: string;
+}
+
+export const fetchWalletTransactions = async (
+  params: { page?: number; limit?: number; type?: string } = {}
+): Promise<{ data: WalletTransaction[]; pagination: any }> => {
+  const response = await httpClient.get<{
+    success: boolean;
+    data: WalletTransaction[];
+    pagination: any;
+  }>("/mobile/driver/wallet/transactions", { params });
+  return { data: response.data.data, pagination: response.data.pagination };
+};
+
+/* ── Trip Receipt ────────────────────────────────── */
+
+export interface TripReceipt {
+  receiptNumber: string;
+  jobId: string;
+  jobNumber: string;
+  date: string;
+  company: { name: string; phone?: string; email?: string; address?: string };
+  driver: { name: string; phone?: string };
+  trip: { pickupAddress?: string; dropoffAddress?: string; distance?: number; duration?: number; startedAt?: string; completedAt?: string };
+  fare: { baseFare: number; distanceFare: number; timeFare: number; waitingFare: number; extras: number; discount: number; totalFare: number };
+  payment: { method: string; status: string; paidAt?: string; amount: number };
+  earnings: { driverEarnings: number; companyCommission: number; commissionRate: number } | null;
+  currency: string;
+}
+
+export const fetchTripReceipt = async (jobId: string): Promise<TripReceipt> => {
+  const response = await httpClient.get<{ success: boolean; data: TripReceipt }>(
+    `/mobile/driver/wallet/receipt/${jobId}`
+  );
+  return response.data.data;
+};
+
+interface CachedJobHistory {
+  filter: string;
+  data: RecentJobSummary[];
+  pagination: JobHistoryResponse["pagination"];
+  timestamp: number;
+}
+
+export const getCachedJobHistory = async (
+  filterKey: string
+): Promise<CachedJobHistory | null> => {
+  try {
+    const raw = await AsyncStorage.getItem(`${JOB_HISTORY_CACHE_KEY}_${filterKey}`);
+    if (!raw) return null;
+    const cached: CachedJobHistory = JSON.parse(raw);
+    if (Date.now() - cached.timestamp > JOB_HISTORY_CACHE_TTL) {
+      // Stale – remove
+      await AsyncStorage.removeItem(`${JOB_HISTORY_CACHE_KEY}_${filterKey}`);
+      return null;
+    }
+    return cached;
+  } catch {
+    return null;
+  }
+};
+
+export const setCachedJobHistory = async (
+  filterKey: string,
+  data: RecentJobSummary[],
+  pagination: JobHistoryResponse["pagination"]
+): Promise<void> => {
+  try {
+    const entry: CachedJobHistory = {
+      filter: filterKey,
+      data,
+      pagination,
+      timestamp: Date.now(),
+    };
+    await AsyncStorage.setItem(
+      `${JOB_HISTORY_CACHE_KEY}_${filterKey}`,
+      JSON.stringify(entry)
+    );
+  } catch {
+    // Non-critical – ignore
+  }
+};
+
 export type DriverShiftStatus = "AVAILABLE" | "BUSY" | "AWAY";
 
 export const updateDriverShiftStatus = async (status: DriverShiftStatus) => {

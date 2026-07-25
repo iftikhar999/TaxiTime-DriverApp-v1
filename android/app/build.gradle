@@ -1,6 +1,7 @@
 apply plugin: "com.android.application"
 apply plugin: "org.jetbrains.kotlin.android"
 apply plugin: "com.facebook.react"
+apply from: project(':react-native-config').projectDir.getPath() + "/dotenv.gradle"
 
 /**
  * This is the configuration block to customize your React Native Android app.
@@ -77,13 +78,13 @@ android {
     buildToolsVersion rootProject.ext.buildToolsVersion
     compileSdk rootProject.ext.compileSdkVersion
 
-    namespace "com.taxitime.driverv1"
+    namespace "com.taxitime.driverapp"
     defaultConfig {
-        applicationId "com.taxitime.driverv1"
+        applicationId "com.taxitime.driverapp"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        versionCode 20260422
+        versionName "1.0.1"
     }
     signingConfigs {
         debug {
@@ -126,3 +127,5 @@ dependencies {
 }
 
 apply from: "../../node_modules/react-native-vector-icons/fonts.gradle"
+// 🔥 Firebase google-services plugin — reads android/app/google-services.json
+apply plugin: "com.google.gms.google-services"

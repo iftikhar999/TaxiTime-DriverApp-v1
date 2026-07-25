@@ -1,7 +1,9 @@
 buildscript {
     ext {
         buildToolsVersion = "35.0.0"
-        minSdkVersion = 24
+        // 26 (Android 8) is required by @stripe/stripe-terminal-react-native.
+        // Android 7 is <1% of active devices in late 2024+; drop is safe.
+        minSdkVersion = 26
         compileSdkVersion = 35
         targetSdkVersion = 35
         ndkVersion = "27.1.12297006"
@@ -15,6 +17,8 @@ buildscript {
         classpath("com.android.tools.build:gradle")
         classpath("com.facebook.react:react-native-gradle-plugin")
         classpath("org.jetbrains.kotlin:kotlin-gradle-plugin")
+        // 🔥 Firebase google-services plugin (reads google-services.json)
+        classpath("com.google.gms:google-services:4.4.2")
     }
 }
 

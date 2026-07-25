@@ -149,16 +149,7 @@ const JobAcceptanceModal: React.FC<JobAcceptanceModalProps> = ({
             </View>
           </View>
 
-          {/* Customer Info */}
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Customer</Text>
-            <Text style={styles.customerName}>
-              {job.passenger?.name || "Unknown"}
-            </Text>
-            <Text style={styles.customerPhone}>{job.passenger?.phone || "N/A"}</Text>
-          </View>
-
-          {/* Trip Details */}
+          {/* Trip Details - Pickup only */}
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>Trip Details</Text>
 
@@ -174,22 +165,9 @@ const JobAcceptanceModal: React.FC<JobAcceptanceModalProps> = ({
                 </Text>
               </View>
             </View>
-
-            {/* Dropoff */}
-            <View style={styles.locationRow}>
-              <View style={styles.locationIcon}>
-                <View style={styles.dropoffDot} />
-              </View>
-              <View style={styles.locationText}>
-                <Text style={styles.locationLabel}>Destination</Text>
-                <Text style={styles.locationAddress}>
-                  {job.dropoffAddress || "Unknown"}
-                </Text>
-              </View>
-            </View>
           </View>
 
-          {/* Trip Stats */}
+          {/* Trip Stats - Distance and ETA only (fare hidden before accept) */}
           <View style={styles.statsRow}>
             <View style={styles.statItem}>
               <Icon name="navigation" size={16} color="#666" />
@@ -201,17 +179,6 @@ const JobAcceptanceModal: React.FC<JobAcceptanceModalProps> = ({
               <Icon name="clock" size={16} color="#666" />
               <Text style={styles.statText}>
                 {job.estimatedDuration ? formatDuration(job.estimatedDuration) : "N/A"}
-              </Text>
-            </View>
-            <View style={styles.statItem}>
-              <Icon name="dollar-sign" size={16} color="#4CAF50" />
-              <Text
-                style={[
-                  styles.statText,
-                  { color: "#4CAF50", fontWeight: "bold" },
-                ]}
-              >
-                {job.estimatedFare ? formatPrice(job.estimatedFare) : "N/A"}
               </Text>
             </View>
           </View>

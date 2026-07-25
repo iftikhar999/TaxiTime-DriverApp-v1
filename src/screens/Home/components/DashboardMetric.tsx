@@ -21,7 +21,9 @@ export const DashboardMetric: React.FC<DashboardMetricProps> = ({
 
   return (
     <View style={styles.metricCard}>
-      <MCIcon name={icon} size={16} color={color} />
+      <View style={[styles.iconCircle, { backgroundColor: `${color}18` }]}>
+        <MCIcon name={icon} size={14} color={color} />
+      </View>
       <Text
         style={[styles.metricValue, { color, fontSize: dynamicFontSize }]}
         numberOfLines={1}
@@ -40,19 +42,26 @@ export const DashboardMetric: React.FC<DashboardMetricProps> = ({
 const styles = StyleSheet.create({
   metricCard: {
     flex: 1,
-    backgroundColor: "#1e2230",
-    paddingVertical: 8,
+    backgroundColor: "#1a1d29",
+    paddingVertical: 10,
     paddingHorizontal: 6,
-    borderRadius: 8,
+    borderRadius: 10,
     alignItems: "center",
     marginHorizontal: 3,
     borderWidth: 1,
     borderColor: "#2a2f3f",
     flexShrink: 1,
   },
+  iconCircle: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    justifyContent: "center",
+    alignItems: "center",
+    marginBottom: 4,
+  },
   metricValue: {
-    fontWeight: "700",
-    marginTop: 4,
+    fontWeight: "800",
     textAlign: "center",
     width: "100%",
   },
@@ -62,5 +71,6 @@ const styles = StyleSheet.create({
     marginTop: 2,
     textAlign: "center",
     width: "100%",
+    fontWeight: "600",
   },
 });

@@ -8,6 +8,9 @@ dependencyResolutionManagement {
         google()
         mavenCentral()
         maven { url "https://www.jitpack.io" }
+        // Notifee ships its AAR locally inside the npm package; point Gradle
+        // at that folder so `app.notifee:core:+` can resolve without jcenter.
+        maven { url "$rootDir/../node_modules/@notifee/react-native/android/libs" }
     }
 }
 

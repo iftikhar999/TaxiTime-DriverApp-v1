@@ -9,9 +9,11 @@
  * 3. Replace the key below
  */
 
-export const GOOGLE_MAPS_API_KEY = 
-  // TODO: Replace with your actual Google Maps API key
-  'AIzaSyBXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'; // Placeholder - replace with real key
+// Matches the key already in use on the Android manifest (Places /
+// Directions APIs enabled on the Google Cloud project `taxilatest`).
+// Without this the Places autocomplete silently returns zero results,
+// which read as "the walk-in drop-off search doesn't work".
+export const GOOGLE_MAPS_API_KEY = 'AIzaSyBhcA7J8ZefAwlzhuYUNDIf_W3Yzy_16gA';
 
 export const MAPS_CONFIG = {
   // Default region for map initialization

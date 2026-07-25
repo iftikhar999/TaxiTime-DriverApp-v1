@@ -8,8 +8,10 @@ import React, {
     useRef,
     useState,
 } from "react";
-import { Alert, Platform } from "react-native";
+import { Platform } from "react-native";
 import type { MediaStream } from "react-native-webrtc";
+import JobRecalledModal from "../components/JobRecalledModal";
+import JobUpdatedModal, { type JobChange } from "../components/JobUpdatedModal";
 import {
     emitDriverStatus,
     emitJobProgress,
@@ -19,8 +21,10 @@ import {
     getSocket,
     registerDriverStateRestoration, // ✅ NEW: For receiving complete driver state via socket
     unregisterDriverStateRestoration, // ✅ FIX: For cleanup
+    setActiveJobIdForLocation, // 🆕 So emitDriverLocation tags pings with jobId
 } from "../services/driverSocket";
 import { ForegroundService } from "../services/foregroundService";
+import { navigate as navigateGlobal } from "../navigation/navigationRef";
 import { RideSummary } from "../types/rides";
 import { Tariff } from "../types/tariff";
 import { calculateDistance } from "../utils/distance";
@@ -218,6 +222,10 @@ export interface ActiveJob extends Omit<RideSummary, "status" | "passenger"> {
   publicJobId?: string | null;
   jobId?: string | null;
   jobType?: string;
+  // 🎯 Service type: TAXI | DELIVERY | COURIER — used by JobOfferScreen to
+  // render the correct badge/iconography so the driver knows what they're
+  // being dispatched to before accepting.
+  serviceType?: string;
   passenger: {
     id: string | null;
     name: string;
@@ -293,11 +301,28 @@ interface JobContextValue {
 
 const JobContext = createContext<JobContextValue | undefined>(undefined);
 
+type RecallModalState = {
+  visible: boolean;
+  title: string;
+  message: string;
+  type: 'recalled' | 'cancelled' | 'taken';
+};
+
 export const JobProvider: React.FC<{ children: React.ReactNode }> = ({
   children,
 }) => {
   const [status, setStatus] = useState<JobStatus>("IDLE");
   const [currentJob, setCurrentJob] = useState<ActiveJob | null>(null);
+  const [recallModal, setRecallModal] = useState<RecallModalState>({
+    visible: false,
+    title: '',
+    message: '',
+    type: 'recalled',
+  });
+  const [updateModal, setUpdateModal] = useState<{ visible: boolean; changes: JobChange[] }>({
+    visible: false,
+    changes: [],
+  });
   const [timer, setTimer] = useState<JobTimerState>({
     elapsedSeconds: 0,
     waitingSeconds: 0,
@@ -704,6 +729,14 @@ export const JobProvider: React.FC<{ children: React.ReactNode }> = ({
     schedulePersist(snapshot);
   }, [hydrated, currentJob, status, timer, routePoints, schedulePersist, shiftContext.selectedTariff, pricingBreakdown, pauseRecords]);
 
+  // 🆕 Keep driverSocket's module-level activeJobId in sync with our
+  // currentJob so every outgoing `driver:location:update` carries a jobId.
+  // Without this the backend can't route location pings to the passenger's
+  // `job_<jobId>` room and the passenger sees no driver movement on the map.
+  useEffect(() => {
+    setActiveJobIdForLocation(currentJob?.id ?? null);
+  }, [currentJob?.id]);
+
   // Ensure active jobs always carry a tariff snapshot for pricing/meter calculations
   useEffect(() => {
     if (!currentJob || currentJob.tariff || !shiftContext.selectedTariff) {
@@ -745,12 +778,12 @@ export const JobProvider: React.FC<{ children: React.ReactNode }> = ({
   const setIncomingJob = useCallback((job: ActiveJob) => {
     console.log("🔔 [setIncomingJob] Called with job:", { id: job.id, status: job.status });
     console.log("🔔 [setIncomingJob] Playing notification sound...");
-    
+
     // Play notification sound
-    playJobNotificationSound().catch((error) => 
+    playJobNotificationSound().catch((error) =>
       console.error("Failed to play notification sound:", error)
     );
-    
+
     setPendingAction(null);
     console.log("🔔 [setIncomingJob] Calling setCurrentJob...");
     setCurrentJob(job);
@@ -760,6 +793,14 @@ export const JobProvider: React.FC<{ children: React.ReactNode }> = ({
     setTimer({ elapsedSeconds: 0, waitingSeconds: 0, distanceMeters: 0, speedKmh: 0 });
     setRoutePoints([]);
     routePointsRef.current = [];
+    // NOTE: navigation to JobOffer happens in the socket-level
+    // `handleJobAssigned` handler (below in this provider), NOT here.
+    // setIncomingJob is also called by JobOfferScreen's own setup effect
+    // when it mounts with a route param — navigating from inside this
+    // action caused an infinite loop (mount → setIncomingJob →
+    // navigate → mount with new params → setIncomingJob → navigate → …)
+    // which surfaced as "Maximum update depth exceeded" in the driver
+    // app and a flood of phantom-rejection events on the dispatcher.
   }, []);
 
   /**
@@ -1472,6 +1513,11 @@ export const JobProvider: React.FC<{ children: React.ReactNode }> = ({
         countdownMs: expiresAt ? Math.max(0, new Date(expiresAt).getTime() - Date.now()) : undefined,
         expiresAt,
         company: payload?.company ?? undefined,
+        // Intermediate stops/waypoints
+        stops: (() => {
+          const s = payload?.stops || payload?.requirements?.stops;
+          return Array.isArray(s) ? s : [];
+        })(),
       } as ActiveJob;
     };
 
@@ -1519,6 +1565,21 @@ export const JobProvider: React.FC<{ children: React.ReactNode }> = ({
         console.log("🎯 JobContext: Built active job:", job);
         setIncomingJob(job);
 
+        // Auto-open the offer screen from wherever the driver currently is
+        // (Home, Earnings, Settings…). This was previously inside
+        // setIncomingJob but moved here so it fires ONLY when a new offer
+        // arrives via socket — not when JobOfferScreen re-syncs its own
+        // state via setIncomingJob (that re-sync was looping the navigate
+        // call and crashing the app with "Maximum update depth exceeded").
+        // Defer one tick so React commits the state set above first.
+        setTimeout(() => {
+          try {
+            navigateGlobal("JobOffer", { job: job as any });
+          } catch (navErr) {
+            console.warn("[handleJobAssigned] navigate('JobOffer') failed:", navErr);
+          }
+        }, 0);
+
         if (Platform.OS === "android") {
           ForegroundService.bringToForeground().catch((error) =>
             console.error("Failed to bring app to foreground:", error)
@@ -1545,12 +1606,57 @@ export const JobProvider: React.FC<{ children: React.ReactNode }> = ({
       
       // Show alert to driver
       const reason = raw?.reason || raw?.message || "The dispatcher has recalled this job.";
-      Alert.alert(
-        "Job Recalled",
-        reason,
-        [{ text: "OK", style: "default" }],
-        { cancelable: true }
-      );
+      setRecallModal({
+        visible: true,
+        title: 'Job Recalled',
+        message: reason,
+        type: 'recalled',
+      });
+      
+      clearJob();
+    };
+
+    const handleJobCancelled = (raw: any) => {
+      if (!matchesCurrentJob(raw)) {
+        return;
+      }
+
+      console.log("❌ JobContext: Job cancelled by dispatcher", raw);
+      
+      // Show alert to driver
+      const reason = raw?.reason || raw?.message || "The job has been cancelled by the dispatcher.";
+      setRecallModal({
+        visible: true,
+        title: 'Job Cancelled',
+        message: reason,
+        type: 'cancelled',
+      });
+      
+      clearJob();
+    };
+
+    const handleJobTaken = (raw: any) => {
+      // ✅ FIX: Ignore if this driver is the one who was assigned the job
+      const takenBy = raw?.takenBy || raw?.driverId || raw?.assignedDriverId;
+      if (takenBy && takenBy === driver?.id) {
+        console.log("ℹ️ JobContext: Ignoring job:taken - we are the assigned driver", raw);
+        return;
+      }
+
+      // Check if this matches the current incoming job (job offer screen)
+      if (!matchesCurrentJob(raw)) {
+        return;
+      }
+
+      console.log("⚠️ JobContext: Job taken by another driver", raw);
+      
+      // Show alert to driver
+      setRecallModal({
+        visible: true,
+        title: 'Job Taken',
+        message: 'This job has been assigned to another driver.',
+        type: 'taken',
+      });
       
       clearJob();
     };
@@ -1560,9 +1666,48 @@ export const JobProvider: React.FC<{ children: React.ReactNode }> = ({
         return;
       }
 
-      const job = buildActiveJobFromPayload(raw);
+      console.log("📝 JobContext: Job data updated by dispatcher", raw);
+
+      // If the backend sent pre-computed changes, use them directly
+      const serverChanges: JobChange[] = raw?.changes || [];
+
+      // Build the updated job from payload
+      const payload = raw?.updatedJob ?? raw?.job ?? raw;
+      const job = buildActiveJobFromPayload(payload);
       const { status: _ignoredStatus, ...rest } = job;
 
+      // Detect changes by comparing with current job
+      const detectedChanges: JobChange[] = [...serverChanges];
+      const current = currentJobRef.current;
+
+      if (current && detectedChanges.length === 0) {
+        // Pickup location
+        if (job.pickupAddress && job.pickupAddress !== current.pickupAddress && job.pickupAddress !== 'Unknown') {
+          detectedChanges.push({ field: 'Pickup Location', oldValue: current.pickupAddress || 'Not set', newValue: job.pickupAddress });
+        }
+        // Dropoff location
+        if (job.dropoffAddress && job.dropoffAddress !== current.dropoffAddress && job.dropoffAddress !== 'Unknown') {
+          detectedChanges.push({ field: 'Drop-off Location', oldValue: current.dropoffAddress || 'Not set', newValue: job.dropoffAddress });
+        }
+        // Fare
+        if (job.estimatedFare && job.estimatedFare !== current.estimatedFare && job.estimatedFare !== 0) {
+          detectedChanges.push({ field: 'Estimated Fare', oldValue: `${current.estimatedFare ?? 0}`, newValue: `${job.estimatedFare}` });
+        }
+        // Passenger name
+        if (job.passenger?.name && job.passenger.name !== current.passenger?.name && job.passenger.name !== 'Unknown') {
+          detectedChanges.push({ field: 'Passenger Name', oldValue: current.passenger?.name || 'Not set', newValue: job.passenger.name });
+        }
+        // Passenger phone
+        if (job.passenger?.phone && job.passenger.phone !== current.passenger?.phone) {
+          detectedChanges.push({ field: 'Passenger Phone', oldValue: current.passenger?.phone || 'Not set', newValue: job.passenger.phone });
+        }
+        // Vehicle type
+        if (job.vehicleType && job.vehicleType !== current.vehicleType) {
+          detectedChanges.push({ field: 'Vehicle Type', oldValue: current.vehicleType || 'Not set', newValue: job.vehicleType });
+        }
+      }
+
+      // Update the current job state with new data
       setCurrentJob((previous) => {
         if (!previous) {
           return previous;
@@ -1574,6 +1719,14 @@ export const JobProvider: React.FC<{ children: React.ReactNode }> = ({
           status: previous.status,
         };
       });
+
+      // Show the update modal if there are changes to display
+      if (detectedChanges.length > 0) {
+        setUpdateModal({
+          visible: true,
+          changes: detectedChanges,
+        });
+      }
     };
 
     const handleJobProgressUpdated = (raw: any) => {
@@ -1651,10 +1804,16 @@ export const JobProvider: React.FC<{ children: React.ReactNode }> = ({
 
         if (confirmedStatus === "IDLE") {
           clearJob();
-        } else if (
-          confirmedStatus === "COMPLETED" ||
-          confirmedStatus === "REJECTED"
-        ) {
+        } else if (confirmedStatus === "COMPLETED") {
+          // ✅ FIX: Don't call clearJob() immediately for COMPLETED
+          // Set status to COMPLETED so JobQueueContext can detect and auto-start queued job
+          // Job will be cleared after queue processing or by fallback timeout
+          console.log('[JobContext] ✅ Job COMPLETED confirmed - setting status (not clearing yet, queue may auto-start)');
+          setStatus(confirmedStatus);
+          setCurrentJob((previous) =>
+            previous ? { ...previous, status: confirmedStatus } : previous
+          );
+        } else if (confirmedStatus === "REJECTED") {
           clearJob();
         } else {
           setStatus(confirmedStatus);
@@ -1678,27 +1837,58 @@ export const JobProvider: React.FC<{ children: React.ReactNode }> = ({
       }
     };
 
-    socket.on("job_assigned", handleJobAssigned);
-    socket.on("jobAssigned", handleJobAssigned);
-    socket.on("job_unassigned", handleJobUnassigned);
-    socket.on("jobUnassigned", handleJobUnassigned);
-    socket.on("job:data:updated", handleJobDataUpdated);
-    socket.on("job:progress:updated", handleJobProgressUpdated);
-    socket.on("server:job:confirmed", handleServerJobConfirmed);
-    socket.on("server:job:error", handleServerJobError);
+    // Wrap every socket handler in try/catch. A malformed payload from the
+    // server previously surfaced as an unhandled promise rejection, which on
+    // Android tears the RN bridge and makes the app look "crashed / minimised"
+    // to the driver. Logging and swallowing lets the session continue so the
+    // dispatcher can resend the job.
+    const safe = <H extends (...a: any[]) => any>(label: string, fn: H) =>
+      (...args: any[]) => {
+        try {
+          const r = fn(...args);
+          if (r && typeof (r as any).catch === 'function') {
+            (r as any).catch((err: any) =>
+              console.error(`⚠️ socket handler "${label}" threw:`, err?.message || err),
+            );
+          }
+        } catch (err: any) {
+          console.error(`⚠️ socket handler "${label}" threw:`, err?.message || err);
+        }
+      };
+    const safeJobAssigned = safe('job_assigned', handleJobAssigned);
+    const safeJobUnassigned = safe('job_unassigned', handleJobUnassigned);
+    const safeJobCancelled = safe('job:cancelled', handleJobCancelled);
+    const safeJobTaken = safe('job:taken', handleJobTaken);
+    const safeJobDataUpdated = safe('job:data:updated', handleJobDataUpdated);
+    const safeJobProgressUpdated = safe('job:progress:updated', handleJobProgressUpdated);
+    const safeServerJobConfirmed = safe('server:job:confirmed', handleServerJobConfirmed);
+    const safeServerJobError = safe('server:job:error', handleServerJobError);
+
+    socket.on("job_assigned", safeJobAssigned);
+    socket.on("jobAssigned", safeJobAssigned);
+    socket.on("job_unassigned", safeJobUnassigned);
+    socket.on("jobUnassigned", safeJobUnassigned);
+    socket.on("job:cancelled", safeJobCancelled);
+    socket.on("job:taken", safeJobTaken);
+    socket.on("job:data:updated", safeJobDataUpdated);
+    socket.on("job:progress:updated", safeJobProgressUpdated);
+    socket.on("server:job:confirmed", safeServerJobConfirmed);
+    socket.on("server:job:error", safeServerJobError);
 
     console.log(`🔌 JobContext: Socket connected = ${socket.connected}`);
     console.log(`🔌 JobContext: Socket ID = ${socket.id}`);
 
     return () => {
-      socket.off("job_assigned", handleJobAssigned);
-      socket.off("jobAssigned", handleJobAssigned);
-      socket.off("job_unassigned", handleJobUnassigned);
-      socket.off("jobUnassigned", handleJobUnassigned);
-      socket.off("job:data:updated", handleJobDataUpdated);
-      socket.off("job:progress:updated", handleJobProgressUpdated);
-      socket.off("server:job:confirmed", handleServerJobConfirmed);
-      socket.off("server:job:error", handleServerJobError);
+      socket.off("job_assigned", safeJobAssigned);
+      socket.off("jobAssigned", safeJobAssigned);
+      socket.off("job_unassigned", safeJobUnassigned);
+      socket.off("jobUnassigned", safeJobUnassigned);
+      socket.off("job:cancelled", safeJobCancelled);
+      socket.off("job:taken", safeJobTaken);
+      socket.off("job:data:updated", safeJobDataUpdated);
+      socket.off("job:progress:updated", safeJobProgressUpdated);
+      socket.off("server:job:confirmed", safeServerJobConfirmed);
+      socket.off("server:job:error", safeServerJobError);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
@@ -1823,6 +2013,12 @@ export const JobProvider: React.FC<{ children: React.ReactNode }> = ({
           estimatedFare: serverJob.estimatedPrice || 0,
           createdAt: serverJob.createdAt,
           customer: serverJob.customer,
+          // Intermediate stops
+          stops: (() => {
+            const reqs = serverJob.requirements;
+            const parsed = typeof reqs === 'string' ? JSON.parse(reqs) : (reqs || {});
+            return Array.isArray(parsed.stops) ? parsed.stops : [];
+          })(),
         };
         
         // Restore job to context
@@ -1849,6 +2045,295 @@ export const JobProvider: React.FC<{ children: React.ReactNode }> = ({
     };
   }, [driver?.id, mapProgressToStatus]);
 
+  // ✅ NEW: Register socket listener for job unassignment/recall (dispatch takes back job)
+  useEffect(() => {
+    if (!driver?.id) {
+      return;
+    }
+
+    const handleJobUnassigned = (data: { jobId: string; internalJobId?: string; reason?: string; message?: string }) => {
+      console.log('🔄 JobContext: Job unassigned/recalled by dispatch:', {
+        receivedJobId: data.jobId,
+        receivedInternalJobId: data.internalJobId,
+        currentJobId: currentJobRef.current?.jobId,
+        currentInternalId: currentJobRef.current?.id,
+        currentStatus: statusRef.current,
+        reason: data.reason,
+        message: data.message,
+      });
+
+      // Match job by either jobId (public ID) or internalJobId (database ID)
+      const jobMatches = 
+        currentJobRef.current?.jobId === data.jobId || 
+        currentJobRef.current?.id === data.jobId ||
+        currentJobRef.current?.id === data.internalJobId ||
+        currentJobRef.current?.jobId === data.internalJobId ||
+        currentJobRef.current?.id?.toString() === data.jobId?.toString() ||
+        currentJobRef.current?.jobId?.toString() === data.jobId?.toString();
+
+      if (jobMatches) {
+        console.log('✅ JobContext: Clearing job - taken back by dispatch');
+        
+        // Stop video streaming if active
+        if (videoStreamingState.status !== 'idle') {
+          stopDriverVideoStream('job_unassigned').catch((error) => {
+            console.warn('[video] Failed to stop video on job unassignment', error);
+          });
+        }
+        
+        // Clear the job and reset to IDLE
+        clearJob();
+        
+        // Emit driver status as AVAILABLE
+        emitDriverStatus("AVAILABLE", location ?? undefined);
+        
+        // Show beautiful modal to driver
+        setTimeout(() => {
+          setRecallModal({
+            visible: true,
+            title: 'Job Recalled',
+            message: data.message || data.reason || 'This job has been taken back by dispatch.',
+            type: 'recalled',
+          });
+        }, 300);
+      } else {
+        console.log('ℹ️ JobContext: Ignoring unassignment for different job:', {
+          unassignedJobId: data.jobId,
+          currentJobId: currentJobRef.current?.id,
+        });
+      }
+    };
+
+    // Register the callback
+    const { registerJobUnassignedCallback, unregisterJobUnassignedCallback } = require('../services/driverSocket');
+    registerJobUnassignedCallback(handleJobUnassigned);
+    console.log('✅ JobContext: Registered for job unassignment notifications');
+
+    // Cleanup on unmount
+    return () => {
+      unregisterJobUnassignedCallback(handleJobUnassigned);
+      console.log('🧹 JobContext: Job unassignment listener unregistered');
+    };
+  }, [driver?.id]);
+
+  // 🆕 POLLING FALLBACK: Periodically verify job is still assigned to this driver
+  // This catches cases where socket events are missed (e.g., network issues)
+  // ⚠️ DISABLED: getActiveJob() returns null (no backend endpoint exists for /mobile/driver/jobs/current)
+  // This was causing false "Job Recalled" popups because null was treated as "no active job".
+  // Re-enable this once a real backend endpoint is implemented.
+  /*
+  useEffect(() => {
+    if (!currentJob?.id || !driver?.id) {
+      return;
+    }
+
+    // Don't poll for completed/cancelled/payment jobs
+    const nonPollableStatuses: JobStatus[] = ['COMPLETED', 'CANCELLED', 'IDLE', 'PENDING_PAYMENT'];
+    if (nonPollableStatuses.includes(status)) {
+      return;
+    }
+
+    // Validity polling cadence. Was 10 s — felt laggy to drivers when the
+    // socket briefly missed an event. 3 s keeps the fallback near-instant
+    // while still cheap.
+    const POLL_INTERVAL_MS = 3000;
+
+    const checkJobValidity = async () => {
+      try {
+        const { getActiveJob } = await import('../services/v2/jobService');
+        const response = await getActiveJob();
+        
+        const serverJob = response?.job || response?.data?.job || response?.data || response;
+        
+        // If server returns no active job, the job was recalled/unassigned
+        if (!serverJob || !serverJob.id) {
+          console.log('🔄 POLL: Server returned no active job - job was likely recalled');
+          setRecallModal({
+            visible: true,
+            title: 'Job Recalled',
+            message: 'This job has been taken back by dispatch.',
+            type: 'recalled',
+          });
+          clearJob();
+          emitDriverStatus("AVAILABLE", location ?? undefined);
+          return;
+        }
+
+        // If server returns a different job, clear current and set new
+        if (serverJob.id !== currentJobRef.current?.id && 
+            serverJob.jobId !== currentJobRef.current?.jobId) {
+          console.log('🔄 POLL: Server returned different job - switching to new job');
+          clearJob();
+          // Job context should be restored via driver state restoration
+          return;
+        }
+
+        // If server shows job as UNASSIGNED/CANCELLED, clear it
+        if (serverJob.status === 'UNASSIGNED' || serverJob.status === 'CANCELLED' || serverJob.status === 'RECALLED') {
+          console.log(`🔄 POLL: Server shows job status as ${serverJob.status} - clearing job`);
+          setRecallModal({
+            visible: true,
+            title: serverJob.status === 'CANCELLED' ? 'Job Cancelled' : 'Job Recalled',
+            message: `This job has been ${serverJob.status.toLowerCase()} by dispatch.`,
+            type: serverJob.status === 'CANCELLED' ? 'cancelled' : 'recalled',
+          });
+          clearJob();
+          emitDriverStatus("AVAILABLE", location ?? undefined);
+          return;
+        }
+
+        // If server shows different driver assigned, clear it
+        if (serverJob.assignedDriverId && serverJob.assignedDriverId !== driver?.id) {
+          console.log('🔄 POLL: Job assigned to different driver - clearing job');
+          setRecallModal({
+            visible: true,
+            title: 'Job Reassigned',
+            message: 'This job has been assigned to another driver.',
+            type: 'taken',
+          });
+          clearJob();
+          emitDriverStatus("AVAILABLE", location ?? undefined);
+          return;
+        }
+
+        console.log('✅ POLL: Job still valid');
+      } catch (error: any) {
+        // If we get a 404, the endpoint may not exist or the job is gone
+        // Only clear if we're confident the endpoint works (not a route-level 404)
+        if (error?.response?.status === 404) {
+          console.warn('⚠️ POLL: Got 404 - endpoint may not exist, ignoring');
+          return;
+        }
+        console.warn('⚠️ POLL: Failed to check job validity:', error?.message);
+      }
+    };
+
+    // Run immediately once
+    checkJobValidity();
+
+    // Set up polling interval
+    const pollInterval = setInterval(checkJobValidity, POLL_INTERVAL_MS);
+    console.log(`🔄 JobContext: Started job validity polling (every ${POLL_INTERVAL_MS / 1000}s)`);
+
+    return () => {
+      clearInterval(pollInterval);
+      console.log('🧹 JobContext: Stopped job validity polling');
+    };
+  }, [currentJob?.id, driver?.id, status, clearJob, location]);
+  */
+
+  // ✅ FALLBACK: If status stays COMPLETED for 5 seconds, clear job
+  // This handles the case where there's no queued job to auto-start
+  useEffect(() => {
+    if (status === 'COMPLETED') {
+      const fallbackTimeout = setTimeout(() => {
+        console.log('[JobContext] ⏰ COMPLETED fallback - clearing job after 5s (no queue auto-start)');
+        clearJob();
+      }, 5000);
+      
+      return () => clearTimeout(fallbackTimeout);
+    }
+  }, [status, clearJob]);
+
+  // 🆕 IDLE POLLING: If the driver has NO current job but an active shift,
+  // poll the server for OFFERED jobs we may have missed via the socket.
+  // This is the safety net for dead-socket / empty-room situations.
+  useEffect(() => {
+    // Only poll when driver is idle (no current job) and has an active shift
+    if (currentJob || !driver?.id) {
+      return;
+    }
+
+    // Only poll if the status is IDLE or we have no status
+    if (status !== 'IDLE' && status !== 'INCOMING') {
+      // If status is something else (ASSIGNED, ON_THE_WAY, etc.) we shouldn't be polling
+      // unless status is IDLE
+      if (status !== 'IDLE') {
+        return;
+      }
+    }
+
+    // Idle polling cadence. Was 8 s — drivers saw up to an 8 s gap between
+    // dispatcher send and job appearing when the socket event was dropped.
+    // 3 s keeps the worst-case wait inside the "instant" feel.
+    const IDLE_POLL_INTERVAL_MS = 3000;
+    let isMounted = true;
+
+    const checkForPendingJobs = async () => {
+      if (!isMounted) return;
+      try {
+        const { getActiveJob } = await import('../services/v2/jobService');
+        const response = await getActiveJob();
+        if (!isMounted) return;
+        
+        const serverJob = response?.job || response?.data?.job || response?.data || response;
+        
+        if (serverJob && serverJob.id && serverJob.status === 'OFFERED') {
+          console.log('📡 IDLE_POLL: Found a pending OFFERED job from server!', serverJob.id);
+          
+          // Build an ActiveJob and trigger the job offer UI
+          // Use setIncomingJob to show the accept/reject screen
+          const incomingJob = {
+            id: String(serverJob.id),
+            internalJobId: String(serverJob.id),
+            legacyJobId: null,
+            publicJobId: serverJob.jobId ? String(serverJob.jobId) : null,
+            jobId: serverJob.jobId || serverJob.id,
+            assignmentId: serverJob.assignmentId || null,
+            offerId: serverJob.offerId || null,
+            status: 'INCOMING' as any,
+            createdAt: serverJob.createdAt || new Date().toISOString(),
+            pickupAddress: serverJob.pickupAddress || 'Unknown',
+            pickupLatitude: serverJob.pickupLatitude || null,
+            pickupLongitude: serverJob.pickupLongitude || null,
+            dropoffAddress: serverJob.dropoffAddress || 'Unknown',
+            dropoffLatitude: serverJob.dropoffLatitude || null,
+            dropoffLongitude: serverJob.dropoffLongitude || null,
+            distance: serverJob.distance || 0,
+            estimatedDuration: serverJob.estimatedDuration || null,
+            estimatedFare: serverJob.estimatedPrice || serverJob.estimatedFare || 0,
+            actualFare: serverJob.actualFare || 0,
+            fare: serverJob.actualFare || serverJob.estimatedPrice || 0,
+            vehicleType: serverJob.vehicleType || null,
+            tariff: undefined,
+            tariffName: null,
+            passenger: {
+              id: serverJob.customer?.id || serverJob.customerId || null,
+              name: serverJob.customer?.name || 'Unknown',
+              phone: serverJob.customer?.phone || '',
+            },
+            countdownMs: undefined,
+            expiresAt: undefined,
+            company: undefined,
+          };
+
+          setIncomingJob(incomingJob as any);
+          console.log('✅ IDLE_POLL: Triggered incoming job UI via polling');
+        }
+      } catch (error: any) {
+        // Silently ignore polling errors — socket is primary, this is a fallback
+        if (error?.response?.status !== 404 && error?.response?.status !== 401) {
+          console.warn('⚠️ IDLE_POLL: Error checking for pending jobs:', error?.message);
+        }
+      }
+    };
+
+    // Run after a short delay (allow socket events to arrive first)
+    const initialDelay = setTimeout(() => {
+      if (isMounted) checkForPendingJobs();
+    }, 3000);
+
+    const pollInterval = setInterval(checkForPendingJobs, IDLE_POLL_INTERVAL_MS);
+    console.log(`📡 JobContext: Started idle job polling (every ${IDLE_POLL_INTERVAL_MS / 1000}s)`);
+
+    return () => {
+      isMounted = false;
+      clearTimeout(initialDelay);
+      clearInterval(pollInterval);
+      console.log('🧹 JobContext: Stopped idle job polling');
+    };
+  }, [currentJob, driver?.id, status, setIncomingJob]);
+
   const acceptJob = useCallback(() => {
     if (!currentJob?.id) {
       console.warn("❌ JobContext: acceptJob called without an active job");
@@ -1860,6 +2345,13 @@ export const JobProvider: React.FC<{ children: React.ReactNode }> = ({
       console.warn("⚠️ JobContext: Accept already in progress, ignoring duplicate call");
       return;
     }
+
+    // Silence the looping ringer + system notification immediately so
+    // the chime stops the moment the driver taps Accept.
+    try {
+      const { JobNotification } = require('react-native').NativeModules;
+      JobNotification?.cancelJobNotification?.().catch?.(() => {});
+    } catch (_e) { /* native module not present — fine */ }
 
     console.log("✅ JobContext: Accepting job", currentJob.id);
 
@@ -1874,9 +2366,20 @@ export const JobProvider: React.FC<{ children: React.ReactNode }> = ({
 
     setPendingAction(acceptAction);
 
-    // ✅ NEW: Emit job:accept event to server for manual assignment flow
+    // Emit BOTH a dedicated job:accept and a job:progress:update with
+    // status='ACCEPTED'. The progress emit goes through the offline-queue
+    // path (smartEmit) so it survives a socket-reconnect window — that's
+    // the canonical signal. The direct socket.emit('job:accept') is the
+    // fast path when the socket is already up. The backend handles
+    // either independently and is idempotent, so worst case the job
+    // status flips ASSIGNED twice (no-op the second time). Previously,
+    // when the app came back from background via an FCM tap and the
+    // driver tapped Accept before the socket finished re-authenticating,
+    // the direct emit was lost AND the progress emit's ACCEPTED status
+    // had no handler server-side — so dispatch stayed stuck on OFFERED
+    // even though the driver was already mid-trip.
     const socket = getSocket();
-    if (socket) {
+    if (socket && socket.connected) {
       socket.emit("job:accept", {
         jobId: currentJob.id,
         driverId: driver?.id,
@@ -1886,10 +2389,15 @@ export const JobProvider: React.FC<{ children: React.ReactNode }> = ({
           longitude: location.longitude,
         } : undefined,
       });
-      console.log("📡 JobContext: Emitted job:accept to server");
+      console.log("📡 JobContext: Emitted job:accept (fast path, socket connected)");
+    } else {
+      console.log("📡 JobContext: Socket not connected, relying on progress:update queue");
     }
 
-    emitJobProgress(currentJob.id, "ACCEPTED", location ?? undefined);
+    emitJobProgress(currentJob.id, "ACCEPTED", location ?? undefined, {
+      acceptedAt: new Date().toISOString(),
+      driverId: driver?.id,
+    });
     emitDriverStatus("BUSY", location ?? undefined);
 
     // Clear pending action after 5 seconds to allow retry if needed
@@ -1919,6 +2427,13 @@ export const JobProvider: React.FC<{ children: React.ReactNode }> = ({
         );
         return;
       }
+
+      // Silence the looping ringer + system notification immediately
+      // on reject — both manual and timeout-triggered.
+      try {
+        const { JobNotification } = require('react-native').NativeModules;
+        JobNotification?.cancelJobNotification?.().catch?.(() => {});
+      } catch (_e) { /* native module not present — fine */ }
 
       console.log(
         "🚫 JobContext: Rejecting job",
@@ -2010,9 +2525,27 @@ export const JobProvider: React.FC<{ children: React.ReactNode }> = ({
       console.warn('[JobContext] Cannot pause: no active job or not started');
       return;
     }
-    
+
+    // Hard limit: a driver may pause a single job at most 3 times. The
+    // dispatcher expects pauses to be exceptional ("traffic cop", "rest
+    // stop") and our settlement engine doesn't price unlimited pauses
+    // sensibly. Beyond 3, the driver must finish or recall the job.
+    const MAX_PAUSES_PER_JOB = 3;
+    if (pauseRecords.length >= MAX_PAUSES_PER_JOB) {
+      console.warn(`[JobContext] ⛔ Pause limit reached (${pauseRecords.length}/${MAX_PAUSES_PER_JOB}) — request rejected`);
+      try {
+        const Toast = require('react-native-toast-message').default;
+        Toast.show({
+          type: 'error',
+          text1: 'Pause limit reached',
+          text2: `You have already paused this job ${pauseRecords.length} times. Finish or contact dispatch.`,
+        });
+      } catch {}
+      return;
+    }
+
     const pauseTime = new Date().toISOString();
-    console.log('[JobContext] ⏸️ Pausing job');
+    console.log(`[JobContext] ⏸️ Pausing job (pause #${pauseRecords.length + 1}/${MAX_PAUSES_PER_JOB})`);
     
     // Create new pause record
     const newPauseRecord: PauseRecord = {
@@ -2055,9 +2588,15 @@ export const JobProvider: React.FC<{ children: React.ReactNode }> = ({
       console.warn('Failed to pause background meter:', error);
     });
     
-    // Emit to backend
-    emitJobProgress(currentJob.id, 'PAUSED', location ?? undefined);
-    
+    // Emit to backend with the running pause-count + this pause record so
+    // the dispatcher's Job Timeline can render "Driver paused (2/3)" and
+    // settlement / abuse-alerting can act on it.
+    emitJobProgress(currentJob.id, 'PAUSED', location ?? undefined, {
+      pauseCount: updatedPauseRecords.length,
+      pauseRecord: newPauseRecord,
+      pausedAt: pauseTime,
+    });
+
     console.log('[JobContext] ✅ Job paused successfully');
   }, [currentJob, status, pauseRecords, location, syncTimerFromEngine]);
 
@@ -2125,13 +2664,41 @@ export const JobProvider: React.FC<{ children: React.ReactNode }> = ({
     console.log('[JobContext] 🔄 Resuming job after leaving payment screen');
     const snapshot = pendingPaymentSnapshotRef.current;
     if (snapshot?.timerState) {
-      globalJobTimer.restoreState(snapshot.timerState);
+      // CRITICAL: snapshot.timerState was captured BEFORE we called
+      // globalJobTimer.pause() in the PENDING_PAYMENT transition, so its
+      // `isPaused` flag is false. Restoring it as-is leaves the timer
+      // thinking it's already running, and resume() is a no-op (returns
+      // immediately when !isPaused). The result was `lastUpdateTime`
+      // never being bumped to `now`, so the processor's first tick
+      // either added the entire payment-screen duration as waiting OR
+      // computed garbage and stalled — which is what the driver sees as
+      // "waiting time stopped". Force isPaused=true on restore so that
+      // resume() actually runs the rebase logic (lastUpdateTime = now,
+      // totalPausedMillis += pause duration).
+      globalJobTimer.restoreState({
+        ...snapshot.timerState,
+        isPaused: true,
+        pauseStartedAt: snapshot.timerState.pauseStartedAt ?? Date.now(),
+      });
       const resumeLocation = locationRef.current ?? null;
       globalJobTimer.resume(resumeLocation);
       syncTimerFromEngine();
+    } else {
+      // No snapshot (e.g. user navigated to payment via a path that
+      // didn't capture state) — at minimum unpause the timer if it was
+      // paused, so the processor can start ticking again.
+      if (globalJobTimer.isTimerPaused()) {
+        globalJobTimer.resume(locationRef.current ?? null);
+      }
     }
     pendingPaymentSnapshotRef.current = null;
     setStatus('STARTED');
+    // Force the job-processor restart effect to re-fire by toggling the
+    // flag. setIsProcessingJob(false) was previously a no-op when it was
+    // already false (state didn't change → useEffect didn't re-run).
+    // Setting to false is fine here because the useEffect at the top of
+    // this provider keys on (status, currentJob?.id, isProcessingJob),
+    // and the status flip alone will trigger it now.
     setIsProcessingJob(false);
   }, [status, syncTimerFromEngine]);
 
@@ -2325,12 +2892,46 @@ export const JobProvider: React.FC<{ children: React.ReactNode }> = ({
       timestamp: new Date().toISOString(),
     } : undefined;
     
-    // ✅ Emit completion with drop-off location and final amount
-    // This will be caught by the backend to update the job record
+    // ✅ Emit completion with drop-off location, final amount, AND the
+    // full fare context so the dispatcher's Job Details can render a
+    // proper breakdown (tariff used, base/distance/waiting components,
+    // actual km, waiting minutes). Without this the backend was only
+    // saving `actualFare` and the dispatch UI showed "Standard / 0.00 /
+    // 0.00 / 0.00" for every closed walk-in.
+    const tariffSnap = shiftContext.selectedTariff || null;
+    const breakdown = currentJob.pricingBreakdown || null;
+    const tariffPayload = tariffSnap
+      ? {
+          tariffId: tariffSnap.id,
+          tariffName: tariffSnap.name,
+        }
+      : {};
+    const breakdownPayload = breakdown
+      ? {
+          fareBreakdown: {
+            base: Number(breakdown.startingPrice) || 0,
+            distance: Number(breakdown.distanceCost) || 0,
+            waiting: Number(breakdown.waitingCost) || 0,
+            duration: Number(breakdown.durationCost) || 0,
+            total: Number(breakdown.totalCost) || 0,
+          },
+          actualDistanceKm: typeof breakdown.totalDistance === 'number'
+            ? breakdown.totalDistance / 1000
+            : undefined,
+          actualWaitingMinutes: typeof breakdown.waitingSeconds === 'number'
+            ? Math.round(breakdown.waitingSeconds / 60)
+            : undefined,
+          actualDurationSeconds: typeof breakdown.duration === 'number'
+            ? breakdown.duration
+            : undefined,
+        }
+      : {};
     emitJobProgress(currentJob.id, 'COMPLETED', dropOffLocation, {
       finalAmount: amountPaid,
       paymentMethod,
       completedAt: new Date().toISOString(),
+      ...tariffPayload,
+      ...breakdownPayload,
     });
     
     emitDriverStatus('AVAILABLE', location ?? undefined);
@@ -2360,13 +2961,32 @@ export const JobProvider: React.FC<{ children: React.ReactNode }> = ({
       console.warn('[JobContext] No active job to change tariff for');
       return;
     }
-    
+
     if (status !== 'STARTED' && status !== 'ACTIVE') {
       console.warn('[JobContext] Can only change tariff during active ride');
       return;
     }
-    
-    console.log('[JobContext] 💱 Changing tariff mid-ride:', {
+
+    // Hard limit: max 3 tariff changes per job. Tariff swapping can be
+    // abused to game pricing (start with cheap rate, switch to expensive
+    // mid-trip). Three changes covers legitimate scenarios (zone exit,
+    // wheelchair add, night-rate kick-in) without giving free rein.
+    const MAX_TARIFF_CHANGES = 3;
+    const currentChanges = currentJob.tariffChangeHistory?.length || 0;
+    if (currentChanges >= MAX_TARIFF_CHANGES) {
+      console.warn(`[JobContext] ⛔ Tariff-change limit reached (${currentChanges}/${MAX_TARIFF_CHANGES}) — request rejected`);
+      try {
+        const Toast = require('react-native-toast-message').default;
+        Toast.show({
+          type: 'error',
+          text1: 'Tariff change limit reached',
+          text2: `You have already changed tariff ${currentChanges} times on this job. Contact dispatch.`,
+        });
+      } catch {}
+      throw new Error('TARIFF_CHANGE_LIMIT_REACHED');
+    }
+
+    console.log(`[JobContext] 💱 Changing tariff mid-ride (#${currentChanges + 1}/${MAX_TARIFF_CHANGES}):`, {
       jobId: currentJob.id,
       oldTariff: currentJob.tariff?.name,
       newTariff: newTariff.name,
@@ -2409,11 +3029,22 @@ export const JobProvider: React.FC<{ children: React.ReactNode }> = ({
       // The job processor will pick up the new tariff from currentJob on next iteration
       console.log('[JobContext] 🔄 Job processor will use new tariff rates on next update');
       
-      // TODO: Notify backend about tariff change
-      // await httpClient.post(`/api/mobile/driver/jobs/${currentJob.id}/change-tariff`, {
-      //   newTariffId: newTariff.id,
-      //   changePoint: tariffChangePoint,
-      // });
+      // Notify backend so the dispatcher's Job Timeline can show "Driver
+      // changed tariff: Standard → Doha (2/3)". We use the existing
+      // job:progress:update channel with a dedicated `event=TARIFF_CHANGED`
+      // discriminator so the server-side handler can append to
+      // requirements.tariffChangeHistory and write a job_audit_log row.
+      try {
+        emitJobProgress(currentJob.id, 'TARIFF_CHANGED', location ?? undefined, {
+          event: 'TARIFF_CHANGED',
+          tariffChangeIndex: currentChanges + 1,
+          tariffChangePoint,
+          newTariffId: newTariff.id,
+          newTariffName: newTariff.name,
+        });
+      } catch (emitErr) {
+        console.warn('[JobContext] tariff-change emit failed:', (emitErr as any)?.message);
+      }
       
       const newWaitingRate = getWaitingRatePerMinute(newTariff);
 
@@ -2601,7 +3232,23 @@ export const JobProvider: React.FC<{ children: React.ReactNode }> = ({
     ]
   );
 
-  return <JobContext.Provider value={value}>{children}</JobContext.Provider>;
+  return (
+    <JobContext.Provider value={value}>
+      {children}
+      <JobRecalledModal
+        visible={recallModal.visible}
+        title={recallModal.title}
+        message={recallModal.message}
+        type={recallModal.type}
+        onDismiss={() => setRecallModal(prev => ({ ...prev, visible: false }))}
+      />
+      <JobUpdatedModal
+        visible={updateModal.visible}
+        changes={updateModal.changes}
+        onDismiss={() => setUpdateModal(prev => ({ ...prev, visible: false }))}
+      />
+    </JobContext.Provider>
+  );
 };
 
 export const useJob = (): JobContextValue => {

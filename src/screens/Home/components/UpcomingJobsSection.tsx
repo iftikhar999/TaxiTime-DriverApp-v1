@@ -34,6 +34,20 @@ interface UpcomingJobsSectionProps {
   claimingJobId?: string | null;
 }
 
+/* ── helpers ─────────────────────────────────────────── */
+
+const formatPickupTime = (scheduledFor?: string): string | null => {
+  if (!scheduledFor) return null;
+  const d = new Date(scheduledFor);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+};
+
+// `formatDropoff` removed: dropoff is no longer rendered on the available-jobs
+// card. See anti-cherry-picking comment in the route block below.
+
+/* ── component ───────────────────────────────────────── */
+
 export const UpcomingJobsSection: React.FC<UpcomingJobsSectionProps> = ({
   jobs,
   loading,
@@ -43,38 +57,44 @@ export const UpcomingJobsSection: React.FC<UpcomingJobsSectionProps> = ({
   errorMessage,
   claimingJobId,
 }) => {
+  /* ---------- loading ---------- */
   if (loading) {
     return (
       <View style={styles.container}>
         <View style={styles.header}>
-          <MCIcon name="briefcase-clock" size={20} color={Colors.accent.highlight} />
-          <Text style={styles.title}>Available Jobs</Text>
+          <View style={styles.headerLeft}>
+            <MCIcon name="briefcase-clock" size={16} color={Colors.accent.highlight} />
+            <Text style={styles.title}>Available Jobs</Text>
+          </View>
         </View>
         <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color={Colors.accent.highlight} />
-          <Text style={styles.loadingText}>Loading available jobs...</Text>
+          <ActivityIndicator size="small" color={Colors.accent.highlight} />
+          <Text style={styles.loadingText}>Finding jobs near you...</Text>
         </View>
       </View>
     );
   }
 
+  /* ---------- empty ---------- */
   if (jobs.length === 0) {
     return (
       <View style={styles.container}>
         <View style={styles.header}>
-          <MCIcon name="briefcase-clock" size={20} color={Colors.accent.highlight} />
-          <Text style={styles.title}>Available Jobs</Text>
+          <View style={styles.headerLeft}>
+            <MCIcon name="briefcase-clock" size={16} color={Colors.accent.highlight} />
+            <Text style={styles.title}>Available Jobs</Text>
+          </View>
           {onRefresh && (
-            <TouchableOpacity onPress={onRefresh} style={styles.refreshButton}>
-              <MCIcon name="refresh" size={18} color="#8d95ad" />
+            <TouchableOpacity onPress={onRefresh} activeOpacity={0.85}>
+              <MCIcon name="refresh" size={16} color="#8d95ad" />
             </TouchableOpacity>
           )}
         </View>
         <View style={styles.emptyContainer}>
-          <MCIcon name="briefcase-off" size={48} color="#8d95ad" />
-          <Text style={styles.emptyText}>No jobs available right now</Text>
+          <MCIcon name="briefcase-off" size={36} color="#3a3f52" />
+          <Text style={styles.emptyText}>No jobs available</Text>
           <Text style={styles.emptySubtext}>
-            New jobs will appear here when they're assigned to your zone
+            New rides will appear when they match your zone
           </Text>
           {!!errorMessage && (
             <Text style={styles.errorText}>{errorMessage}</Text>
@@ -84,17 +104,24 @@ export const UpcomingJobsSection: React.FC<UpcomingJobsSectionProps> = ({
     );
   }
 
+  /* ---------- list ---------- */
   return (
     <View style={styles.container}>
       <View style={styles.header}>
-        <MCIcon name="briefcase-clock" size={20} color={Colors.accent.highlight} />
-        <Text style={styles.title}>Available Jobs ({jobs.length})</Text>
+        <View style={styles.headerLeft}>
+          <MCIcon name="briefcase-clock" size={16} color={Colors.accent.highlight} />
+          <Text style={styles.title}>Available Jobs</Text>
+          <View style={styles.countBadge}>
+            <Text style={styles.countBadgeText}>{jobs.length}</Text>
+          </View>
+        </View>
         {onRefresh && (
-          <TouchableOpacity onPress={onRefresh} style={styles.refreshButton}>
-            <MCIcon name="refresh" size={18} color="#8d95ad" />
+          <TouchableOpacity onPress={onRefresh} activeOpacity={0.85}>
+            <MCIcon name="refresh" size={16} color="#8d95ad" />
           </TouchableOpacity>
         )}
       </View>
+
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}
@@ -103,99 +130,91 @@ export const UpcomingJobsSection: React.FC<UpcomingJobsSectionProps> = ({
         {jobs.map((job) => {
           const isClaiming = claimingJobId === job.id;
           const claimingInProgress = Boolean(claimingJobId);
+          const pickupTime = formatPickupTime(job.scheduledFor);
+
           return (
-            <View key={job.id} style={styles.jobCard}>
-            <View style={styles.jobHeader}>
-              <View style={styles.jobHeaderLeft}>
-                <MCIcon name="account-circle" size={20} color="#8d95ad" />
-                <Text style={styles.passengerName} numberOfLines={1}>
-                  {job.passengerName || "Passenger"}
-                </Text>
-              </View>
-              <View style={styles.jobHeaderRight}>
-                {job.isLate && (
-                  <View style={styles.lateBadge}>
-                    <Text style={styles.lateBadgeText}>Late</Text>
-                  </View>
-                )}
-                {job.estimatedFare ? (
-                  <Text style={styles.estimatedFare}>
-                    {formatCurrency(job.estimatedFare)}
+            <View key={job.id} style={styles.card}>
+              {/* ── top row: passenger + badges ── */}
+              <View style={styles.cardTop}>
+                <View style={styles.cardTopLeft}>
+                  <Text style={styles.passengerName} numberOfLines={1}>
+                    {job.passengerName || "Passenger"}
                   </Text>
-                ) : null}
+                  {job.isLate && (
+                    <View style={styles.lateBadge}>
+                      <Text style={styles.lateBadgeText}>LATE</Text>
+                    </View>
+                  )}
+                  {pickupTime && (
+                    <View style={styles.timeBadge}>
+                      <MCIcon name="clock-outline" size={10} color="#38bdf8" />
+                      <Text style={styles.timeBadgeText}>{pickupTime}</Text>
+                    </View>
+                  )}
+                </View>
+              </View>
+
+              {/* ── pickup only — dropoff is intentionally hidden to
+                   prevent cherry-picking (drivers shouldn't accept or reject
+                   based on ride length). They get the full destination after
+                   claiming the job. ── */}
+              <View style={styles.routeBlock}>
+                <View style={styles.pickupIndicator}>
+                  <View style={styles.routeDotGreen} />
+                </View>
+                <View style={styles.routeAddresses}>
+                  <Text style={styles.pickupLabel}>PICKUP</Text>
+                  <Text style={styles.addressText} numberOfLines={2}>
+                    {job.pickupAddress}
+                  </Text>
+                </View>
+              </View>
+
+              {/* ── bottom row: ONLY distance-to-pickup + ETA-to-pickup.
+                   `estimatedDistance` (total ride length) is hidden for the
+                   same anti-cherry-picking reason. ── */}
+              <View style={styles.cardBottom}>
+                <View style={styles.chipRow}>
+                  {typeof job.distanceToPickup === "number" && (
+                    <View style={styles.chip}>
+                      <MCIcon name="map-marker-distance" size={11} color="#8d95ad" />
+                      <Text style={styles.chipText}>
+                        {formatDistance(job.distanceToPickup)} away
+                      </Text>
+                    </View>
+                  )}
+                  {typeof job.minutesToPickup === "number" && (
+                    <View style={styles.chip}>
+                      <MCIcon name="timer-sand" size={11} color="#8d95ad" />
+                      <Text style={styles.chipText}>
+                        {job.minutesToPickup <= 0
+                          ? "Overdue"
+                          : `${job.minutesToPickup} min to pickup`}
+                      </Text>
+                    </View>
+                  )}
+                </View>
+
+                <TouchableOpacity
+                  style={[
+                    styles.claimButton,
+                    claimingInProgress && styles.claimButtonDisabled,
+                  ]}
+                  onPress={() => onClaimJob(job.id)}
+                  activeOpacity={0.85}
+                  disabled={claimingInProgress}
+                >
+                  {isClaiming ? (
+                    <ActivityIndicator size="small" color="#000" />
+                  ) : (
+                    <>
+                      <MCIcon name="hand-back-right" size={14} color="#000" />
+                      <Text style={styles.claimButtonText}>Claim</Text>
+                    </>
+                  )}
+                </TouchableOpacity>
               </View>
             </View>
-
-            <View style={styles.addressRow}>
-              <MCIcon name="map-marker" size={16} color="#4ade80" />
-              <Text style={styles.addressText} numberOfLines={2}>
-                {job.pickupAddress}
-              </Text>
-            </View>
-
-            {job.dropoffAddress ? (
-              <View style={styles.addressRow}>
-                <MCIcon name="flag-checkered" size={16} color={Colors.danger} />
-                <Text style={styles.addressText} numberOfLines={2}>
-                  {job.dropoffAddress}
-                </Text>
-              </View>
-            ) : null}
-
-            {job.estimatedDistance ? (
-              <View style={styles.infoRow}>
-                <MCIcon name="map-marker-distance" size={14} color="#8d95ad" />
-                <Text style={styles.infoText}>
-                  ~{job.estimatedDistance.toFixed(1)} km away
-                </Text>
-              </View>
-            ) : null}
-
-            {typeof job.distanceToPickup === "number" && (
-              <View style={styles.infoRow}>
-                <MCIcon name="crosshairs" size={14} color="#8d95ad" />
-                <Text style={styles.infoText}>
-                  {formatDistance(job.distanceToPickup)}
-                </Text>
-              </View>
-            )}
-
-            {job.scheduledFor ? (
-              <View style={styles.infoRow}>
-                <MCIcon name="clock-outline" size={14} color="#8d95ad" />
-                <Text style={styles.infoText}>
-                  Scheduled: {new Date(job.scheduledFor).toLocaleTimeString()}
-                </Text>
-              </View>
-            ) : null}
-
-            {typeof job.minutesToPickup === "number" && (
-              <View style={styles.infoRow}>
-                <MCIcon name="timer-sand" size={14} color="#8d95ad" />
-                <Text style={styles.infoText}>
-                  {job.minutesToPickup <= 0
-                    ? "Pickup overdue"
-                    : `Pickup in ${job.minutesToPickup} min`}
-                </Text>
-              </View>
-            )}
-
-            <TouchableOpacity
-              style={[styles.claimButton, claimingInProgress && styles.claimButtonDisabled]}
-              onPress={() => onClaimJob(job.id)}
-              activeOpacity={0.85}
-              disabled={claimingInProgress}
-            >
-              {isClaiming ? (
-                <ActivityIndicator size="small" color="#fff" />
-              ) : (
-                <MCIcon name="hand-back-right" size={18} color="#fff" />
-              )}
-              <Text style={styles.claimButtonText}>
-                {isClaiming ? "Claiming..." : "Claim Job"}
-              </Text>
-            </TouchableOpacity>
-          </View>
           );
         })}
       </ScrollView>
@@ -203,161 +222,240 @@ export const UpcomingJobsSection: React.FC<UpcomingJobsSectionProps> = ({
   );
 };
 
+/* ── styles ──────────────────────────────────────────── */
+
 const styles = StyleSheet.create({
   container: {
-    marginBottom: 12,
+    marginBottom: 16,
   },
   header: {
     flexDirection: "row",
     alignItems: "center",
+    justifyContent: "space-between",
     paddingHorizontal: 12,
     marginBottom: 8,
+  },
+  headerLeft: {
+    flexDirection: "row",
+    alignItems: "center",
     gap: 6,
   },
   title: {
-    flex: 1,
     fontSize: 14,
     fontWeight: "700",
     color: "#ffffff",
   },
-  refreshButton: {
-    padding: 4,
+  countBadge: {
+    backgroundColor: Colors.accent.highlight,
+    borderRadius: 10,
+    paddingHorizontal: 7,
+    paddingVertical: 1,
+    marginLeft: 2,
+  },
+  countBadgeText: {
+    fontSize: 10,
+    fontWeight: "700",
+    color: "#000",
   },
   loadingContainer: {
-    padding: 28,
+    flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#1a1d29",
+    justifyContent: "center",
+    gap: 8,
+    padding: 20,
     marginHorizontal: 12,
+    backgroundColor: "#1a1d29",
     borderRadius: 10,
     borderWidth: 1,
     borderColor: "#2a2f3f",
   },
   loadingText: {
-    marginTop: 8,
-    fontSize: 13,
+    fontSize: 12,
     color: "#8d95ad",
   },
   emptyContainer: {
-    paddingVertical: 16,
-    paddingHorizontal: 12,
     alignItems: "center",
-    backgroundColor: "#1a1d29",
-    marginHorizontal: 12,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: "#2a2f3f",
-    minHeight: 120,
+    paddingVertical: 24,
+    paddingHorizontal: 12,
+    gap: 6,
   },
   emptyText: {
-    marginTop: 12,
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: "600",
-    color: "#ffffff",
+    color: "#6b7280",
   },
   emptySubtext: {
-    marginTop: 8,
-    fontSize: 13,
-    color: "#8d95ad",
+    fontSize: 12,
+    color: "#4b5563",
     textAlign: "center",
   },
   errorText: {
-    marginTop: 10,
-    fontSize: 12,
+    marginTop: 6,
+    fontSize: 11,
     color: Colors.danger,
     textAlign: "center",
   },
+
+  /* scroll */
   scrollContent: {
     paddingHorizontal: 12,
-    gap: 8,
+    gap: 10,
   },
-  jobCard: {
-    width: 240,
+  card: {
+    width: 280,
     backgroundColor: "#1a1d29",
-    borderRadius: 8,
+    borderRadius: 10,
     padding: 10,
     borderWidth: 1,
     borderColor: "#2a2f3f",
   },
-  jobHeader: {
+
+  /* card top */
+  cardTop: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    marginBottom: 6,
+    marginBottom: 8,
   },
-  jobHeaderLeft: {
+  cardTopLeft: {
     flex: 1,
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
-  },
-  jobHeaderRight: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
+    marginRight: 8,
   },
   passengerName: {
-    flex: 1,
     fontSize: 13,
-    fontWeight: "600",
-    color: "#ffffff",
-  },
-  estimatedFare: {
-    fontSize: 15,
     fontWeight: "700",
-    color: Colors.accent.highlight,
+    color: "#fff",
+    flexShrink: 1,
   },
   lateBadge: {
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 8,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 4,
     backgroundColor: "rgba(239, 68, 68, 0.18)",
-    borderWidth: 1,
-    borderColor: "rgba(239, 68, 68, 0.4)",
   },
   lateBadgeText: {
-    fontSize: 10,
+    fontSize: 9,
     fontWeight: "700",
     color: "#f87171",
-    textTransform: "uppercase",
   },
-  addressRow: {
+  timeBadge: {
     flexDirection: "row",
-    alignItems: "flex-start",
-    marginBottom: 6,
+    alignItems: "center",
+    gap: 3,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 4,
+    backgroundColor: "rgba(56, 189, 248, 0.12)",
+  },
+  timeBadgeText: {
+    fontSize: 9,
+    fontWeight: "700",
+    color: "#38bdf8",
+  },
+  fare: {
+    fontSize: 15,
+    fontWeight: "800",
+    color: Colors.accent.highlight,
+  },
+
+  /* route block */
+  routeBlock: {
+    flexDirection: "row",
+    gap: 8,
+    marginBottom: 8,
+  },
+  routeIndicator: {
+    alignItems: "center",
+    width: 14,
+    paddingTop: 3,
+  },
+  pickupIndicator: {
+    alignItems: "center",
+    width: 14,
+    paddingTop: 5,
+  },
+  pickupLabel: {
+    fontSize: 9,
+    fontWeight: "700",
+    color: "#4ade80",
+    letterSpacing: 0.8,
+    marginBottom: 2,
+  },
+  routeDotGreen: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: "#4ade80",
+  },
+  routeLine: {
+    width: 1.5,
+    flex: 1,
+    backgroundColor: "#2a2f3f",
+    marginVertical: 2,
+  },
+  routeAddresses: {
+    flex: 1,
+    justifyContent: "space-between",
     gap: 6,
   },
   addressText: {
-    flex: 1,
     fontSize: 12,
-    color: "#8d95ad",
+    color: "#e2e8f0",
     lineHeight: 16,
   },
-  infoRow: {
+  addressMuted: {
+    color: "#6b7280",
+    fontStyle: "italic",
+  },
+
+  /* bottom row */
+  cardBottom: {
     flexDirection: "row",
     alignItems: "center",
-    marginBottom: 4,
-    gap: 6,
+    justifyContent: "space-between",
   },
-  infoText: {
-    fontSize: 11,
+  chipRow: {
+    flex: 1,
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+    marginRight: 8,
+  },
+  chip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 3,
+    backgroundColor: "#151821",
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    borderRadius: 6,
+  },
+  chipText: {
+    fontSize: 10,
+    fontWeight: "600",
     color: "#8d95ad",
   },
+
+  /* claim */
   claimButton: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: Colors.accent.highlight,
-    paddingVertical: 8,
+    paddingVertical: 7,
+    paddingHorizontal: 14,
     borderRadius: 8,
-    marginTop: 6,
-    gap: 6,
+    gap: 4,
   },
   claimButtonDisabled: {
-    opacity: 0.7,
+    opacity: 0.5,
   },
   claimButtonText: {
     fontSize: 12,
     fontWeight: "700",
-    color: "#fff",
+    color: "#000",
   },
 });

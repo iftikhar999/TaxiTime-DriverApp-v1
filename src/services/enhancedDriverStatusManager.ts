@@ -157,17 +157,24 @@ class EnhancedDriverStatusManager {
 
     console.log("🔄 Replaying current driver state after reconnect");
 
-    // Replay current status
-    const statusPayload: StatusUpdatePayload = {
-      driverId: this.driverState.driverId,
-      oldStatus: this.driverState.status,
-      newStatus: this.driverState.status,
-      location: this.driverState.location,
-      timestamp: new Date().toISOString(),
-      reason: "system",
-    };
+    // ⚠️ Don't replay status if driver has an active job — JobContext manages
+    // the authoritative status during jobs. Replaying stale AVAILABLE here
+    // would override the BUSY status that JobContext set.
+    if (this.driverState.activeJob) {
+      console.log("⚠️ Skipping status replay - driver has active job (JobContext is authoritative)");
+    } else {
+      // Only replay status when there's no active job
+      const statusPayload: StatusUpdatePayload = {
+        driverId: this.driverState.driverId,
+        oldStatus: this.driverState.status,
+        newStatus: this.driverState.status,
+        location: this.driverState.location,
+        timestamp: new Date().toISOString(),
+        reason: "system",
+      };
 
-    this.socket.emit(SOCKET_EVENTS.DRIVER_STATUS_UPDATE, statusPayload);
+      this.socket.emit(SOCKET_EVENTS.DRIVER_STATUS_UPDATE, statusPayload);
+    }
 
     // Replay current location
     const locationPayload: LocationUpdatePayload = {
@@ -648,7 +655,8 @@ class EnhancedDriverStatusManager {
       if (this.socket?.connected && this.driverState) {
         this.socket.emit(SOCKET_EVENTS.DRIVER_HEARTBEAT, {
           driverId: this.driverState.driverId,
-          status: this.driverState.status,
+          // Don't send status in heartbeat - it can override the real status
+          // managed by JobContext and cause false AVAILABLE during active jobs
           timestamp: new Date().toISOString(),
         });
       }

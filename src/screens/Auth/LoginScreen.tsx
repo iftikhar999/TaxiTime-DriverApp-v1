@@ -2,11 +2,12 @@ import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { AxiosError } from 'axios';
 import React, { useState } from 'react';
 import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import Toast from 'react-native-toast-message';
 import FormTextInput from '../../components/design/FormTextInput';
 import Typography from '../../components/design/Typography';
 import PrimaryButton from '../../components/design/buttons/PrimaryButton';
-import { DEFAULT_DRIVER_CREDENTIALS } from '../../config/environment';
+import { DEFAULT_DRIVER_CREDENTIALS, __DEV_MODE__ } from '../../config/environment';
 import { useAuth } from '../../context/AuthContext';
 import { AuthStackParamList } from '../../navigation/RootNavigator';
 import { Colors } from '../../theme/colors';
@@ -16,8 +17,11 @@ export type LoginScreenProps = NativeStackScreenProps<AuthStackParamList, 'Login
 
 const LoginScreen: React.FC<LoginScreenProps> = ({ navigation }) => {
   const { login } = useAuth();
-  const [email, setEmail] = useState(DEFAULT_DRIVER_CREDENTIALS.email);
-  const [password, setPassword] = useState(DEFAULT_DRIVER_CREDENTIALS.password);
+  // Only prefill test credentials in DEV. Shipping a real account's email +
+  // password pre-typed on the login screen is a security hole and makes the
+  // app look unfinished. In release builds the fields start empty.
+  const [email, setEmail] = useState(__DEV__ ? DEFAULT_DRIVER_CREDENTIALS.email : '');
+  const [password, setPassword] = useState(__DEV__ ? DEFAULT_DRIVER_CREDENTIALS.password : '');
   const [loading, setLoading] = useState(false);
 
   const handleLogin = async () => {
@@ -45,6 +49,7 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ navigation }) => {
   };
 
   return (
+    <SafeAreaView style={styles.container} edges={['top','bottom','left','right']}>
     <KeyboardAvoidingView
       style={styles.container}
       behavior={Platform.select({ ios: 'padding', android: undefined })}
@@ -60,11 +65,13 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ navigation }) => {
           <Typography style={styles.subtitle}>
             Use your fleet credentials to access jobs, shift tools, and live earnings.
           </Typography>
-          <View style={styles.credentialsCard}>
-            <Text style={styles.credentialsTitle}>Quick start credentials</Text>
-            <Text style={styles.credentialsValue}>{DEFAULT_DRIVER_CREDENTIALS.email}</Text>
-            <Text style={styles.credentialsValue}>{DEFAULT_DRIVER_CREDENTIALS.password}</Text>
-          </View>
+          {__DEV__ && DEFAULT_DRIVER_CREDENTIALS.email ? (
+            <View style={styles.credentialsCard}>
+              <Text style={styles.credentialsTitle}>Quick start credentials (dev)</Text>
+              <Text style={styles.credentialsValue}>{DEFAULT_DRIVER_CREDENTIALS.email}</Text>
+              <Text style={styles.credentialsValue}>{DEFAULT_DRIVER_CREDENTIALS.password}</Text>
+            </View>
+          ) : null}
         </View>
 
         <View style={styles.form}>
@@ -96,6 +103,7 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ navigation }) => {
         </View>
       </ScrollView>
     </KeyboardAvoidingView>
+    </SafeAreaView>
   );
 };
 

@@ -1,4 +1,5 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
@@ -6,7 +7,13 @@
     <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <!-- Android 14+ requires a type-specific permission for foreground services.
+         notifee's keepalive service uses `dataSync` so dispatcher messages keep
+         flowing while the app is backgrounded. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+    <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
@@ -15,11 +22,26 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" /> <!-- ✅ For auto-restart after reboot -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" /> <!-- ✅ CRITICAL: Prevent Android from killing the app -->
     <uses-permission android:name="android.permission.WAKE_LOCK" /> <!-- ✅ Keep device awake for location updates -->
+    <!-- ✅ Storage for document upload (driver docs: license, insurance, vehicle reg).
+         Android 13+ uses READ_MEDIA_IMAGES; older uses READ_EXTERNAL_STORAGE. -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
 
     <uses-feature android:name="android.hardware.location" />
     <uses-feature android:name="android.hardware.location.gps" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.camera.front" android:required="false" />
+
+    <!-- Stripe Tap to Pay on Android: NFC + Bluetooth are required by the
+         Terminal SDK even when only using Tap-to-Pay. Marked not required so
+         the app still installs on devices without NFC (the payment method is
+         hidden at runtime when unsupported). -->
+    <uses-permission android:name="android.permission.NFC" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
+    <uses-feature android:name="android.hardware.nfc" android:required="false" />
+    <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
 
     <application
       android:name=".MainApplication"
@@ -38,13 +60,13 @@
       
       <!-- Location Tracking Service -->
       <service
-        android:name="com.taxitime.driverv1.location.LocationTrackingService"
+        android:name="com.taxitime.driverapp.location.LocationTrackingService"
         android:exported="false"
         android:foregroundServiceType="location" />
       
       <!-- ✅ Job Meter Service for background job tracking -->
       <service
-        android:name="com.taxitime.driverv1.meter.JobMeterService"
+        android:name="com.taxitime.driverapp.meter.JobMeterService"
         android:exported="false"
         android:foregroundServiceType="location" />
       
@@ -59,7 +81,7 @@
         android:name=".RestartServiceBroadcast"
         android:exported="false">
         <intent-filter>
-          <action android:name="com.taxitime.driverv1.RESTART_SERVICE" />
+          <action android:name="com.taxitime.driverapp.RESTART_SERVICE" />
         </intent-filter>
       </receiver>
       
@@ -80,11 +102,24 @@
         android:configChanges="keyboard|keyboardHidden|orientation|screenLayout|screenSize|smallestScreenSize|uiMode"
         android:launchMode="singleTask"
         android:windowSoftInputMode="adjustResize"
+        android:showWhenLocked="true"
+        android:turnScreenOn="true"
         android:exported="true">
         <intent-filter>
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />
         </intent-filter>
       </activity>
+
+      <!-- Override notifee's default foreground service so it runs as
+           `dataSync` (no 3-minute limit) instead of Android 14+'s default
+           SHORT_SERVICE, which triggers an ANR after the timeout on our
+           never-resolving keep-alive task. tools:replace overrides the
+           manifest-merge value set by @notifee/react-native. -->
+      <service
+          android:name="app.notifee.core.ForegroundService"
+          android:foregroundServiceType="dataSync"
+          android:stopWithTask="true"
+          tools:replace="android:foregroundServiceType" />
     </application>
 </manifest>

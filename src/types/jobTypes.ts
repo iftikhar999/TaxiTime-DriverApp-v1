@@ -61,6 +61,14 @@ export interface ActiveJob {
   dropoffLat: number;
   dropoffLng: number;
   
+  // Intermediate stops/waypoints
+  stops?: Array<{
+    address: string;
+    latitude?: number;
+    longitude?: number;
+    order?: number;
+  }>;
+  
   // Rider information
   riderName: string;
   riderPhone: string;

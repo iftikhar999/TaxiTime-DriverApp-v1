@@ -7,6 +7,7 @@
  */
 
 import { useNavigation } from '@react-navigation/native';
+import { formatCurrency, CURRENCY_SYMBOL } from '../../config/currency';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
     Dimensions,
@@ -201,7 +202,7 @@ const JobPausedScreen: React.FC = () => {
   }, [status, navigation]);
   
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
+    <SafeAreaView style={styles.container} edges={['top', 'bottom', 'left', 'right']}>
       {/* Professional Header */}
       <View style={styles.header}>
         <View style={styles.headerContent}>
@@ -232,144 +233,58 @@ const JobPausedScreen: React.FC = () => {
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
       >
-        {/* Professional Meter Display */}
-        <View style={styles.meterSection}>
-          <View style={styles.meterDisplay}>
-            <View style={styles.meterHeader}>
-              <Text style={styles.meterHeaderText}>CURRENT FARE</Text>
-              <View style={styles.pauseIndicator}>
-                <View style={styles.pauseDot} />
-                <Text style={styles.pauseText}>PAUSED</Text>
-              </View>
-            </View>
-            <Text style={styles.meterFare}>${formattedCurrentFare}</Text>
-          </View>
+        {/* Clean Fare Display */}
+        <View style={styles.fareSection}>
+          <Text style={styles.fareLabel}>CURRENT FARE</Text>
+          <Text style={styles.fareAmount}>{CURRENCY_SYMBOL} {formattedCurrentFare}</Text>
+          <Text style={styles.fareHint}>Meter paused</Text>
+        </View>
 
-          {/* Professional Stats Row */}
-          <View style={styles.statsRow}>
-            <View style={styles.statBox}>
-              <Text style={styles.statValue}>
-                {((timer?.distanceMeters || 0) / 1000).toFixed(2)}
-              </Text>
-              <Text style={styles.statUnit}>KM</Text>
-            </View>
-            <View style={[styles.statBox, styles.statBoxBorder]}>
-              <Text style={styles.statValue}>
-                {formatTime(timer?.elapsedSeconds || 0)}
-              </Text>
-              <Text style={styles.statUnit}>TIME</Text>
-            </View>
-            <View style={[styles.statBox, styles.statBoxBorder]}>
-              <Text style={styles.statValue}>
-                {formatTime(timer?.waitingSeconds || 0)}
-              </Text>
-              <Text style={styles.statUnit}>WAIT</Text>
-            </View>
-            <View style={[styles.statBox, styles.statBoxBorder]}>
-              <Text style={styles.statValue}>
-                {formatTime(currentPauseDuration)}
-              </Text>
-              <Text style={styles.statUnit}>PAUSE</Text>
-            </View>
+        {/* Fare Breakdown */}
+        <View style={styles.breakdownSection}>
+          <View style={styles.breakdownRow}>
+            <Text style={styles.breakdownLabel}>Base Fare</Text>
+            <Text style={styles.breakdownValue}>{formatCurrency(fareBreakdown.base)}</Text>
+          </View>
+          <View style={styles.breakdownRow}>
+            <Text style={styles.breakdownLabel}>
+              Distance ({((timer?.distanceMeters || 0) / 1000).toFixed(2)} km)
+            </Text>
+            <Text style={styles.breakdownValue}>{formatCurrency(fareBreakdown.distance)}</Text>
+          </View>
+          <View style={styles.breakdownRow}>
+            <Text style={styles.breakdownLabel}>
+              Time ({formatTime(timer?.elapsedSeconds || 0)})
+            </Text>
+            <Text style={styles.breakdownValue}>{formatCurrency(fareBreakdown.time)}</Text>
+          </View>
+          <View style={styles.breakdownRow}>
+            <Text style={styles.breakdownLabel}>
+              Waiting ({formatTime(timer?.waitingSeconds || 0)})
+            </Text>
+            <Text style={styles.breakdownValue}>{formatCurrency(fareBreakdown.waiting)}</Text>
           </View>
         </View>
 
-        {/* Destination insight */}
+        {/* Destination Card */}
         <View style={styles.destinationCard}>
           <View style={styles.destinationHeader}>
-            <Text style={styles.destinationTitle}>Destination</Text>
-            {dropoffCoordinate ? (
-              <TouchableOpacity
-                style={styles.destinationNavigate}
-                onPress={handleNavigateToDropoff}
-                activeOpacity={0.85}
-              >
-                <Icon name="navigation-variant" size={16} color="#0f172a" />
-                <Text style={styles.destinationNavigateText}>Navigate</Text>
-              </TouchableOpacity>
-            ) : null}
+            <Icon name="map-marker" size={20} color="#22c55e" />
+            <Text style={styles.destinationLabel}>DESTINATION</Text>
           </View>
-          <Text style={styles.destinationAddress} numberOfLines={2}>
+          <Text style={styles.destinationAddress} numberOfLines={3}>
             {dropoffLabel}
           </Text>
-          {dropoffCoordinate ? (
-            <Text style={styles.destinationCoords}>
-              {dropoffCoordinate.latitude.toFixed(5)}, {dropoffCoordinate.longitude.toFixed(5)}
-            </Text>
-          ) : (
-            <Text style={styles.destinationHint}>
-              Set a drop-off from the Home screen to unlock navigation shortcuts.
-            </Text>
+          {dropoffCoordinate && (
+            <TouchableOpacity
+              style={styles.navigateButton}
+              onPress={handleNavigateToDropoff}
+              activeOpacity={0.7}
+            >
+              <Icon name="navigation-variant" size={18} color="#fff" />
+              <Text style={styles.navigateText}>Navigate</Text>
+            </TouchableOpacity>
           )}
-        </View>
-
-        {/* Fare Breakdown Table */}
-        <View style={styles.breakdownSection}>
-          <Text style={styles.breakdownHeader}>FARE BREAKDOWN</Text>
-          <View style={styles.breakdownTable}>
-            <View style={styles.breakdownRow}>
-              <Text style={styles.breakdownLabel}>Base Fare</Text>
-              <Text style={styles.breakdownValue}>${fareBreakdown.base.toFixed(2)}</Text>
-            </View>
-            <View style={[styles.breakdownRow, styles.breakdownRowBorder]}>
-              <Text style={styles.breakdownLabel}>
-                Distance ({((timer?.distanceMeters || 0) / 1000).toFixed(2)} km)
-              </Text>
-              <Text style={styles.breakdownValue}>${fareBreakdown.distance.toFixed(2)}</Text>
-            </View>
-            <View style={[styles.breakdownRow, styles.breakdownRowBorder]}>
-              <Text style={styles.breakdownLabel}>
-                Time ({formatTime(timer?.elapsedSeconds || 0)})
-              </Text>
-              <Text style={styles.breakdownValue}>${fareBreakdown.time.toFixed(2)}</Text>
-            </View>
-            <View style={[styles.breakdownRow, styles.breakdownRowBorder]}>
-              <Text style={styles.breakdownLabel}>
-                Waiting ({formatTime(timer?.waitingSeconds || 0)})
-              </Text>
-              <Text style={styles.breakdownValue}>${fareBreakdown.waiting.toFixed(2)}</Text>
-            </View>
-            <View style={[styles.breakdownRow, styles.breakdownTotal]}>
-              <Text style={styles.breakdownLabelTotal}>TOTAL</Text>
-              <Text style={styles.breakdownValueTotal}>${fareBreakdown.total.toFixed(2)}</Text>
-            </View>
-          </View>
-        </View>
-
-        {/* Trip Info */}
-        <View style={styles.tripSection}>
-          <Text style={styles.tripHeader}>TRIP INFORMATION</Text>
-          <View style={styles.tripInfo}>
-            <View style={styles.tripRow}>
-              <Icon name="account" size={16} color="#666" />
-              <Text style={styles.tripLabel}>Passenger</Text>
-              <Text style={styles.tripValue}>
-                {currentJob?.passenger?.name || 'N/A'}
-              </Text>
-            </View>
-            {currentJob?.passenger?.phone && (
-              <View style={[styles.tripRow, styles.tripRowBorder]}>
-                <Icon name="phone" size={16} color="#666" />
-                <Text style={styles.tripLabel}>Phone</Text>
-                <Text style={styles.tripValue}>{currentJob.passenger.phone}</Text>
-              </View>
-            )}
-            <View style={[styles.tripRow, styles.tripRowBorder]}>
-              <Icon name="map-marker" size={16} color="#666" />
-              <Text style={styles.tripLabel}>Destination</Text>
-              <Text style={styles.tripValue} numberOfLines={2}>
-                {currentJob?.dropoffAddress || 'N/A'}
-              </Text>
-            </View>
-          </View>
-        </View>
-
-        {/* Auto-Resume Info */}
-        <View style={styles.infoBox}>
-          <Icon name="information-outline" size={20} color="#888" />
-          <Text style={styles.infoText}>
-            Trip will auto-resume if you start moving
-          </Text>
         </View>
       </ScrollView>
 
@@ -392,7 +307,6 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#000000',
-    paddingTop: 40,
   },
   // Professional Header
   header: {
@@ -494,248 +408,111 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#333',
   },
-  destinationCard: {
-    backgroundColor: '#111322',
-    marginHorizontal: 10,
-    marginBottom: 10,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: '#2a2f3f',
-    padding: 14,
-    gap: 6,
-  },
-  destinationHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  destinationTitle: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#f5b400',
-    letterSpacing: 0.6,
-  },
-  destinationNavigate: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: '#facc15',
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 999,
-  },
-  destinationNavigateText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#0f172a',
-  },
-  destinationAddress: {
-    fontSize: 14,
-    color: '#ffffff',
-    fontWeight: '600',
-  },
-  destinationCoords: {
-    fontSize: 12,
-    color: '#94a3b8',
-    fontFamily: 'Courier New',
-  },
-  destinationHint: {
-    fontSize: 12,
-    color: '#8d95ad',
-  },
-  meterDisplay: {
-    padding: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: '#333',
-  },
-  meterHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  meterHeaderText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: '#888',
-    letterSpacing: 1.5,
-  },
-  pauseIndicator: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  pauseDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: '#ef4444',
-  },
-  pauseText: {
-    fontSize: 9,
-    fontWeight: '700',
-    color: '#ef4444',
-    letterSpacing: 0.5,
-  },
-  meterFare: {
-    fontSize: 48,
-    fontWeight: '700',
-    color: '#fbbf24',
-    fontFamily: 'Courier New',
-    letterSpacing: -1,
-  },
-  // Professional Stats Row
-  statsRow: {
-    flexDirection: 'row',
-    paddingVertical: 12,
-    paddingHorizontal: 8,
-  },
-  statBox: {
-    flex: 1,
-    alignItems: 'center',
-  },
-  statBoxBorder: {
-    borderLeftWidth: 1,
-    borderLeftColor: '#333',
-  },
-  statValue: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#fff',
-    fontFamily: 'Courier New',
-  },
-  statUnit: {
-    fontSize: 8,
-    fontWeight: '600',
-    color: '#666',
-    marginTop: 4,
-    letterSpacing: 1,
-  },
-  // Fare Breakdown Section
+  // Fare Breakdown
   breakdownSection: {
     backgroundColor: '#1a1a1a',
-    margin: 10,
-    marginTop: 0,
-    borderRadius: 8,
-    overflow: 'hidden',
+    marginHorizontal: 16,
+    marginTop: 12,
+    borderRadius: 12,
+    padding: 16,
     borderWidth: 1,
     borderColor: '#333',
-  },
-  breakdownHeader: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: '#888',
-    letterSpacing: 1.5,
-    padding: 12,
-    paddingBottom: 8,
-  },
-  breakdownTable: {
-    paddingHorizontal: 12,
-    paddingBottom: 12,
+    gap: 12,
   },
   breakdownRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    paddingVertical: 8,
-  },
-  breakdownRowBorder: {
-    borderTopWidth: 1,
-    borderTopColor: '#333',
+    alignItems: 'center',
   },
   breakdownLabel: {
-    fontSize: 12,
-    color: '#999',
+    fontSize: 13,
+    color: '#888',
     flex: 1,
   },
   breakdownValue: {
-    fontSize: 12,
+    fontSize: 14,
     fontWeight: '600',
-    color: '#fff',
-    fontFamily: 'Courier New',
-  },
-  breakdownTotal: {
-    borderTopWidth: 2,
-    borderTopColor: '#fbbf24',
-    marginTop: 4,
-    paddingTop: 12,
-  },
-  breakdownLabelTotal: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#fff',
-    letterSpacing: 1,
-  },
-  breakdownValueTotal: {
-    fontSize: 18,
-    fontWeight: '700',
     color: '#fbbf24',
     fontFamily: 'Courier New',
   },
-  // Trip Information Section
-  tripSection: {
+  // Destination
+  destinationCard: {
     backgroundColor: '#1a1a1a',
-    margin: 10,
-    marginTop: 0,
+    marginHorizontal: 16,
+    marginTop: 12,
+    marginBottom: 16,
+    borderRadius: 12,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#22c55e',
+  },
+  destinationHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 12,
+  },
+  destinationLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#22c55e',
+    letterSpacing: 1.2,
+  },
+  destinationAddress: {
+    fontSize: 15,
+    color: '#ffffff',
+    fontWeight: '500',
+    lineHeight: 22,
+    marginBottom: 12,
+  },
+  navigateButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: '#22c55e',
+    paddingVertical: 12,
     borderRadius: 8,
-    overflow: 'hidden',
+  },
+  navigateText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#fff',
+    letterSpacing: 0.5,
+  },
+  // Clean Fare Section
+  fareSection: {
+    alignItems: 'center',
+    paddingVertical: 24,
+    marginHorizontal: 16,
+    marginTop: 8,
+    backgroundColor: '#1a1a1a',
+    borderRadius: 12,
     borderWidth: 1,
     borderColor: '#333',
   },
-  tripHeader: {
+  fareLabel: {
     fontSize: 11,
     fontWeight: '700',
     color: '#888',
     letterSpacing: 1.5,
-    padding: 12,
-    paddingBottom: 8,
+    marginBottom: 8,
   },
-  tripInfo: {
-    paddingHorizontal: 12,
-    paddingBottom: 12,
+  fareAmount: {
+    fontSize: 56,
+    fontWeight: '700',
+    color: '#fbbf24',
+    fontFamily: 'Courier New',
+    letterSpacing: -2,
   },
-  tripRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    paddingVertical: 8,
-  },
-  tripRowBorder: {
-    borderTopWidth: 1,
-    borderTopColor: '#333',
-  },
-  tripLabel: {
-    fontSize: 11,
-    color: '#666',
-    width: 80,
-  },
-  tripValue: {
-    flex: 1,
+  fareHint: {
     fontSize: 12,
-    fontWeight: '600',
-    color: '#fff',
+    color: '#666',
+    marginTop: 8,
   },
-  // Info Box
-  infoBox: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    marginHorizontal: 10,
-    marginTop: 0,
-    padding: 12,
-    backgroundColor: '#1a1a1a',
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#333',
-  },
-  infoText: {
-    flex: 1,
-    fontSize: 11,
-    color: '#888',
-    lineHeight: 16,
-  },
-  // Professional Button
+  // Resume Button
   buttonContainer: {
-    padding: 10,
+    padding: 16,
     backgroundColor: '#000000',
     borderTopWidth: 1,
     borderTopColor: '#333',
@@ -747,7 +524,7 @@ const styles = StyleSheet.create({
     gap: 8,
     backgroundColor: '#fbbf24',
     paddingVertical: 16,
-    borderRadius: 4,
+    borderRadius: 8,
   },
   resumeText: {
     fontSize: 14,

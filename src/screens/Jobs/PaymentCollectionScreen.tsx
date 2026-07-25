@@ -11,28 +11,39 @@
 
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { useStripe } from '@stripe/stripe-react-native';
-import React, { useEffect, useState } from 'react';
+import {
+    requestNeededAndroidPermissions,
+    useStripeTerminal,
+} from '@stripe/stripe-terminal-react-native';
+import React, { useEffect, useRef, useState } from 'react';
 import {
     ActivityIndicator,
     Alert,
     Dimensions,
     Modal,
+    Platform,
     StyleSheet,
     Text,
     TextInput,
     TouchableOpacity,
-    View
+    View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Toast from 'react-native-toast-message';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { useJob } from '../../context/JobContext';
 import { useLocation } from '../../context/LocationContext';
+import { CURRENCY_CODE, CURRENCY_SYMBOL } from '../../config/currency';
+import { useShift } from '../../context/ShiftContext';
 import httpClient from '../../services/httpClient';
+import {
+    createTapToPayIntent,
+    getTerminalLocationId,
+} from '../../services/stripeTerminalService';
 
 const { width } = Dimensions.get('window');
 
-type PaymentMethod = 'CASH' | 'CARD' | 'EFTPOS' | 'ACCOUNT' | 'GIFT_CARD';
+type PaymentMethod = 'CASH' | 'CARD' | 'TAP_TO_PAY' | 'EFTPOS' | 'ACCOUNT' | 'GIFT_CARD';
 
 const PAYMENT_METHODS: {
   id: PaymentMethod;
@@ -48,33 +59,40 @@ const PAYMENT_METHODS: {
     color: '#10b981',
     description: 'Pay with physical cash'
   },
-  { 
-    id: 'CARD', 
-    label: 'Card', 
-    icon: 'credit-card-outline', 
+  {
+    id: 'TAP_TO_PAY',
+    label: 'Tap to Pay',
+    icon: 'contactless-payment-circle',
+    color: '#0ea5e9',
+    description: 'Contactless credit, debit, EFTPOS, or prepaid Visa/Mastercard gift card'
+  },
+  {
+    id: 'CARD',
+    label: 'Card (Online)',
+    icon: 'credit-card-outline',
     color: '#3b82f6',
-    description: 'Contactless, chip, or manual entry'
+    description: 'Enter card details (also for prepaid Visa/Mastercard gift cards)'
   },
-  { 
-    id: 'EFTPOS', 
-    label: 'EFTPOS', 
-    icon: 'contactless-payment', 
+  {
+    id: 'EFTPOS',
+    label: 'EFTPOS (External)',
+    icon: 'contactless-payment',
     color: '#8b5cf6',
-    description: 'External terminal transaction'
+    description: 'Payment taken on a separate EFTPOS terminal — log the receipt'
   },
-  { 
-    id: 'ACCOUNT', 
-    label: 'Account', 
-    icon: 'account-cash-outline', 
+  {
+    id: 'ACCOUNT',
+    label: 'Account',
+    icon: 'account-cash-outline',
     color: '#f59e0b',
     description: 'Charge to customer account'
   },
-  { 
-    id: 'GIFT_CARD', 
-    label: 'Gift Card', 
-    icon: 'gift-outline', 
+  {
+    id: 'GIFT_CARD',
+    label: 'Fleet Gift Card',
+    icon: 'gift-outline',
     color: '#ec4899',
-    description: 'Redeem gift card code'
+    description: 'AB Taxi-issued gift card code'
   },
 ];
 
@@ -83,6 +101,7 @@ export default function PaymentCollectionScreen() {
   const route = useRoute<any>();
   const { currentJob, pricingBreakdown, pauseRecords, timer, completeJob } = useJob();
   const { location } = useLocation();
+  const { selectedTariff } = useShift();
   
   const { initPaymentSheet, presentPaymentSheet } = useStripe();
 
@@ -107,8 +126,63 @@ export default function PaymentCollectionScreen() {
   const [giftCardCode, setGiftCardCode] = useState('');
   const [showDetailsModal, setShowDetailsModal] = useState(false);
   
-  // Stripe state
+  // Stripe state.
+  // `paymentSheetReady` drives UI; `initPromiseRef` lets Confirm await an
+  // in-flight initPaymentSheet call so the first tap works. Previously the
+  // first Confirm could fire before init resolved, showing an error and only
+  // succeeding on the second tap.
   const [paymentSheetReady, setPaymentSheetReady] = useState(false);
+  const initPromiseRef = useRef<Promise<boolean> | null>(null);
+
+  // Stripe Terminal (Tap to Pay) state.
+  // tapStatus drives the modal UI; connectedReaderRef tracks whether we're
+  // already connected so we don't re-discover on every tap.
+  const [tapModalVisible, setTapModalVisible] = useState(false);
+  const [tapStatus, setTapStatus] = useState<
+    'idle' | 'permissions' | 'discovering' | 'connecting' | 'ready' | 'collecting' | 'processing' | 'success' | 'error'
+  >('idle');
+  const [tapError, setTapError] = useState<string | null>(null);
+  const [tapReceipt, setTapReceipt] = useState<{ amount: number; last4?: string; brand?: string } | null>(null);
+  const terminalLocationIdRef = useRef<string | null>(null);
+  const tapIntentIdRef = useRef<string | null>(null);
+  // Mirrors connectedReader so async loops read the latest value instead of
+  // the render-time closure.
+  const connectedReaderRef = useRef<any>(null);
+
+  const {
+    initialize: initializeTerminal,
+    discoverReaders,
+    connectReader,
+    connectedReader,
+    retrievePaymentIntent,
+    collectPaymentMethod,
+    confirmPaymentIntent,
+    cancelCollectPaymentMethod,
+    disconnectReader,
+  } = useStripeTerminal({
+    onUpdateDiscoveredReaders: async (readers) => {
+      // Tap-to-Pay discovery returns exactly one reader (this device). Connect
+      // as soon as we see it; if we're already connected, do nothing.
+      if (!readers || readers.length === 0) return;
+      if (connectedReaderRef.current) return;
+      try {
+        const locationId = terminalLocationIdRef.current;
+        if (!locationId) return;
+        setTapStatus('connecting');
+        const { error } = await connectReader({
+          discoveryMethod: 'tapToPay',
+          reader: readers[0],
+          locationId,
+          merchantDisplayName: 'AB Taxi',
+        });
+        if (error) throw new Error(error.message);
+        setTapStatus('ready');
+      } catch (err: any) {
+        setTapStatus('error');
+        setTapError(err?.message || 'Failed to connect reader');
+      }
+    },
+  });
 
   const safeParse = (val: any) => {
     if (val === null || val === undefined) return 0;
@@ -160,6 +234,21 @@ export default function PaymentCollectionScreen() {
         fareSource = 'currentJob.earningsSoFar';
       }
     }
+
+    // ✅ FIX: If all fare sources are 0, fall back to tariff base fare
+    // This ensures the minimum charge is always the tariff's base/flag-drop fare
+    if (baseFare <= 0) {
+      const tariffBaseFare = safeParse(
+        selectedTariff?.baseFare ??
+        (currentJob as any)?.tariff?.baseFare ??
+        (currentJob as any)?.tariff?.base_fare ??
+        pricingBreakdown?.startingPrice
+      );
+      if (tariffBaseFare > 0) {
+        baseFare = tariffBaseFare;
+        fareSource = 'tariff baseFare (minimum fallback)';
+      }
+    }
     
     const extra = safeParse(extraAmount);
     const discount = safeParse(discountAmount);
@@ -182,20 +271,23 @@ export default function PaymentCollectionScreen() {
       });
       setFinalFare(newFinalFare);
     }
-  }, [initialAmount, extraAmount, discountAmount, totalMobility, finalFare, pricingBreakdown?.totalCost, timer?.earningsSoFar, currentJob?.fare, currentJob?.earningsSoFar]);
+  }, [initialAmount, extraAmount, discountAmount, totalMobility, finalFare, pricingBreakdown?.totalCost, pricingBreakdown?.startingPrice, timer?.earningsSoFar, currentJob?.fare, currentJob?.earningsSoFar, selectedTariff?.baseFare]);
 
   // Total pause time
   const totalPauseSeconds = pauseRecords?.reduce((sum, record) => sum + (record.durationSeconds || 0), 0) || 0;
 
-  // Initialize Stripe Payment Sheet
-  const initializePaymentSheet = async () => {
+  // Initialize Stripe Payment Sheet. Returns true when the sheet is ready.
+  // We store the in-flight promise in a ref so handleCardPayment can await it
+  // if the user taps Confirm before init resolves (otherwise the first tap
+  // would fail with "payment sheet not initialized" and only the second
+  // succeed).
+  const initializePaymentSheet = async (): Promise<boolean> => {
     try {
       const amountCents = Math.round(safeParse(finalFare) * 100);
-      
-      // ✅ FIX: httpClient baseURL already includes /api, so just use /payments/create-intent
+
       const response = await httpClient.post('/payments/create-intent', {
         amount: amountCents,
-        currency: 'nzd',
+        currency: CURRENCY_CODE.toLowerCase(),
         jobId: currentJob?.id,
         customerId: currentJob?.customer?.id,
       });
@@ -216,28 +308,30 @@ export default function PaymentCollectionScreen() {
       if (error) {
         console.error('Error initializing payment sheet:', error);
         Alert.alert('Setup Failed', error.message);
-      } else {
-        setPaymentSheetReady(true);
+        return false;
       }
+
+      setPaymentSheetReady(true);
+      return true;
     } catch (error: any) {
       console.error('Error creating payment intent:', error);
-      
-      // ✅ Show detailed error to user
       Alert.alert(
         'Stripe Not Configured',
         'Card payment requires Stripe API keys to be configured.\n\nPlease add STRIPE_SECRET_KEY and STRIPE_PUBLISHABLE_KEY to backend .env file.\n\nFor now, use Cash, EFTPOS, Account, or Gift Card.',
         [{ text: 'OK' }]
       );
-      
-      // Reset to no selection
       setSelectedMethod(null);
+      return false;
+    } finally {
+      initPromiseRef.current = null;
     }
   };
 
   // Initialize Stripe when Card is selected
   useEffect(() => {
-    if (selectedMethod === 'CARD' && safeParse(finalFare) > 0) {
-      initializePaymentSheet();
+    if (selectedMethod === 'CARD' && safeParse(finalFare) > 0 && !initPromiseRef.current) {
+      setPaymentSheetReady(false);
+      initPromiseRef.current = initializePaymentSheet();
     }
   }, [selectedMethod, finalFare]);
 
@@ -251,9 +345,24 @@ export default function PaymentCollectionScreen() {
     }
   };
 
-  // Handle Card Payment with Stripe
+  // Handle Card Payment with Stripe.
+  // If init is still in flight (driver tapped Confirm quickly), await it so
+  // the first tap works instead of erroring and forcing a retry.
   const handleCardPayment = async (): Promise<boolean> => {
     try {
+      if (!paymentSheetReady) {
+        const pending = initPromiseRef.current;
+        if (pending) {
+          const ok = await pending;
+          if (!ok) return false;
+        } else {
+          // No in-flight init (e.g., finalFare was 0 when selected). Kick one off.
+          initPromiseRef.current = initializePaymentSheet();
+          const ok = await initPromiseRef.current;
+          if (!ok) return false;
+        }
+      }
+
       const { error } = await presentPaymentSheet();
 
       if (error) {
@@ -271,13 +380,153 @@ export default function PaymentCollectionScreen() {
     }
   };
 
-  // Validate method-specific requirements
-  const validatePaymentMethod = (): boolean => {
-    if (selectedMethod === 'EFTPOS' && !eftposNumber.trim()) {
-      Alert.alert('EFTPOS Number Required', 'Please enter the EFTPOS terminal number');
+  // -------- Tap to Pay (Stripe Terminal) --------
+
+  // Ensure Android runtime perms + Terminal location + a connected reader
+  // before we try to collect a tap. Idempotent: safe to call repeatedly.
+  const ensureTapToPayReady = async (): Promise<boolean> => {
+    try {
+      if (Platform.OS === 'android') {
+        setTapStatus('permissions');
+        const { error: permErr } = await requestNeededAndroidPermissions({
+          accessFineLocation: {
+            title: 'Location permission',
+            message: 'Stripe Tap to Pay requires location to process payments.',
+            buttonPositive: 'OK',
+          },
+        });
+        if (permErr) {
+          setTapStatus('error');
+          setTapError('Location / Bluetooth permissions are required for Tap to Pay.');
+          return false;
+        }
+      }
+
+      if (connectedReaderRef.current) {
+        setTapStatus('ready');
+        return true;
+      }
+
+      // Stripe Terminal requires an explicit SDK initialisation before any
+      // discover/connect call. Safe to call repeatedly — it's a no-op after
+      // the first success.
+      const initResult = await initializeTerminal();
+      if (initResult?.error) {
+        throw new Error(initResult.error.message || 'Terminal SDK init failed');
+      }
+
+      if (!terminalLocationIdRef.current) {
+        terminalLocationIdRef.current = await getTerminalLocationId();
+      }
+
+      setTapStatus('discovering');
+      const { error } = await discoverReaders({
+        discoveryMethod: 'tapToPay',
+        simulated: false,
+      });
+      if (error) throw new Error(error.message);
+      // onUpdateDiscoveredReaders will flip tapStatus to 'connecting' → 'ready'.
+      return true;
+    } catch (err: any) {
+      setTapStatus('error');
+      setTapError(err?.message || 'Tap to Pay setup failed');
       return false;
     }
-    
+  };
+
+  const runTapToPayPayment = async (): Promise<boolean> => {
+    setTapError(null);
+    setTapReceipt(null);
+    setTapModalVisible(true);
+
+    const ready = await ensureTapToPayReady();
+    if (!ready) return false;
+
+    // Wait (briefly) for the reader to finish connecting if not yet connected.
+    // connectedReader updates via the provider.
+    const deadline = Date.now() + 15_000;
+    while (!connectedReaderRef.current && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    if (!connectedReaderRef.current) {
+      setTapStatus('error');
+      setTapError('Could not connect reader in time.');
+      return false;
+    }
+
+    try {
+      const amountCents = Math.round(safeParse(finalFare) * 100);
+      if (!amountCents || amountCents <= 0) {
+        throw new Error('Fare must be greater than zero.');
+      }
+
+      const intent = await createTapToPayIntent({
+        amount: amountCents,
+        currency: CURRENCY_CODE.toLowerCase(),
+        jobId: currentJob?.id,
+        customerId: currentJob?.customer?.id,
+      });
+      tapIntentIdRef.current = intent.paymentIntentId;
+
+      const retrieved = await retrievePaymentIntent(intent.clientSecret);
+      if (retrieved.error || !retrieved.paymentIntent) {
+        throw new Error(retrieved.error?.message || 'Failed to retrieve PaymentIntent');
+      }
+
+      setTapStatus('collecting');
+      const collected = await collectPaymentMethod({
+        paymentIntent: retrieved.paymentIntent,
+        skipTipping: true,
+      });
+      if (collected.error || !collected.paymentIntent) {
+        throw new Error(collected.error?.message || 'Card tap was cancelled');
+      }
+
+      setTapStatus('processing');
+      const confirmed = await confirmPaymentIntent({
+        paymentIntent: collected.paymentIntent,
+      });
+      if (confirmed.error || !confirmed.paymentIntent) {
+        throw new Error(confirmed.error?.message || 'Payment confirmation failed');
+      }
+
+      const pi: any = confirmed.paymentIntent;
+      const charge = pi.charges?.data?.[0];
+      const cardDetails = charge?.paymentMethodDetails?.cardPresent || charge?.payment_method_details?.card_present;
+      setTapReceipt({
+        amount: (pi.amount || amountCents) / 100,
+        last4: cardDetails?.last4,
+        brand: cardDetails?.brand,
+      });
+      setTapStatus('success');
+      return true;
+    } catch (err: any) {
+      setTapStatus('error');
+      setTapError(err?.message || 'Tap to Pay failed');
+      // Best-effort cancel so the SDK isn't left collecting.
+      try { await cancelCollectPaymentMethod(); } catch (_) {}
+      return false;
+    }
+  };
+
+  useEffect(() => {
+    connectedReaderRef.current = connectedReader || null;
+  }, [connectedReader]);
+
+  // Clean up Terminal connection when leaving the screen.
+  useEffect(() => {
+    return () => {
+      if (connectedReaderRef.current) {
+        disconnectReader().catch(() => {});
+      }
+    };
+  }, [disconnectReader]);
+
+  // Validate method-specific requirements.
+  // EFTPOS transaction number is optional — drivers often collect the physical
+  // receipt instead of typing the TXN number. Account and gift card codes are
+  // still required because those are the only way to identify the payer.
+  const validatePaymentMethod = (): boolean => {
     if (selectedMethod === 'ACCOUNT' && !accountNumber.trim()) {
       Alert.alert('Account Number Required', 'Please enter the customer account number');
       return false;
@@ -347,9 +596,18 @@ export default function PaymentCollectionScreen() {
       const numericExtra = toNumeric(extraAmount);
       const numericDiscount = toNumeric(discountAmount);
 
-      // Handle Stripe card payment
+      // Handle Stripe online card payment
       if (selectedMethod === 'CARD') {
         const paymentSuccess = await handleCardPayment();
+        if (!paymentSuccess) {
+          setProcessing(false);
+          return;
+        }
+      }
+
+      // Handle Stripe Tap to Pay (contactless via driver's phone as reader)
+      if (selectedMethod === 'TAP_TO_PAY') {
+        const paymentSuccess = await runTapToPayPayment();
         if (!paymentSuccess) {
           setProcessing(false);
           return;
@@ -397,6 +655,10 @@ export default function PaymentCollectionScreen() {
         paymentData.accountNumber = accountNumber;
       } else if (selectedMethod === 'GIFT_CARD') {
         paymentData.giftCardCode = giftCardCode;
+      } else if (selectedMethod === 'TAP_TO_PAY') {
+        paymentData.stripePaymentIntentId = tapIntentIdRef.current || undefined;
+        paymentData.cardBrand = tapReceipt?.brand || undefined;
+        paymentData.cardLast4 = tapReceipt?.last4 || undefined;
       }
 
       await httpClient.post('/mobile/driver/jobs/payment', paymentData);
@@ -407,12 +669,58 @@ export default function PaymentCollectionScreen() {
       Toast.show({
         type: 'success',
         text1: 'Payment Collected',
-        text2: `$${finalFare} via ${PAYMENT_METHODS.find((m) => m.id === selectedMethod)?.label}`,
+        text2: `${CURRENCY_SYMBOL} ${finalFare} via ${PAYMENT_METHODS.find((m) => m.id === selectedMethod)?.label}`,
         position: 'top',
       });
 
+      // After payment succeeds, offer to rate the passenger before going home.
+      // The rate screen has its own Skip button, so this never blocks the driver.
       setTimeout(() => {
-        navigation.navigate('Home' as never);
+        // Resolve the jobId from the active job first, then fall back to the
+        // navigation params. Previously referenced an undefined `routeJobId`
+        // symbol which threw at runtime and aborted the success path.
+        const resolvedJobId =
+          currentJob?.id ||
+          currentJob?.jobId ||
+          route.params?.jobId ||
+          route.params?.id ||
+          '';
+
+        // Resolve customer identity from the active job. Walk-in (guest) jobs
+        // have no registered customer row — `currentJob.customer` is null —
+        // so there's nothing to rate. Earlier this code referenced bare
+        // `customerId` / `customerName` identifiers that were never declared,
+        // which threw "ReferenceError: Property 'customerId' doesn't exist"
+        // under Hermes and aborted the success path.
+        const isWalkIn =
+          !!currentJob && (currentJob as any).isWalkIn === true;
+        const resolvedCustomerId = currentJob?.customer?.id || null;
+        const resolvedCustomerName =
+          currentJob?.customer?.name ||
+          [currentJob?.customer?.firstName, currentJob?.customer?.lastName]
+            .filter(Boolean)
+            .join(' ')
+            .trim() ||
+          (isWalkIn ? 'Walk-in passenger' : null);
+
+        const params: any = { jobId: resolvedJobId };
+        if (currentJob?.tripId) params.tripId = currentJob.tripId;
+        if (resolvedCustomerId) params.passengerId = resolvedCustomerId;
+        if (resolvedCustomerName) params.passengerName = resolvedCustomerName;
+        // Forward a flag so RatePassenger can choose to auto-skip or show a
+        // simplified "rate the trip" UI instead of a passenger-profile view.
+        if (isWalkIn) params.isWalkIn = true;
+
+        // Skip rating screen entirely for walk-ins (no customer record to
+        // attach the rating to) OR when we have no customer at all.
+        if (params.passengerId) {
+          (navigation as any).reset({
+            index: 0,
+            routes: [{ name: 'Home' }, { name: 'RatePassenger', params }],
+          });
+        } else {
+          navigation.navigate('Home' as never);
+        }
       }, 1500);
     } catch (error: any) {
       console.error('Payment error:', error);
@@ -452,7 +760,7 @@ export default function PaymentCollectionScreen() {
   };
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
+    <SafeAreaView style={styles.container} edges={['top', 'bottom', 'left', 'right']}>
       {/* Compact Header */}
       <View style={styles.header}>
         <View style={styles.headerContent}>
@@ -467,7 +775,7 @@ export default function PaymentCollectionScreen() {
         {/* Large Total Amount */}
         <View style={styles.totalSection}>
           <Text style={styles.totalLabel}>COLLECT</Text>
-          <Text style={styles.totalAmount}>${finalFare}</Text>
+          <Text style={styles.totalAmount}>{CURRENCY_SYMBOL} {finalFare}</Text>
         </View>
 
         {/* Compact Fare Summary - Single Row */}
@@ -498,7 +806,7 @@ export default function PaymentCollectionScreen() {
           <View style={styles.fareSummaryDivider} />
           <View style={styles.fareSummaryItem}>
             <Text style={styles.fareSummaryValue}>
-              ${pricingBreakdown?.totalCost || safeParse(timer?.earningsSoFar || initialAmount).toFixed(2)}
+              {CURRENCY_SYMBOL} {pricingBreakdown?.totalCost || safeParse(timer?.earningsSoFar || initialAmount).toFixed(2)}
             </Text>
             <Text style={styles.fareSummaryLabel}>METER</Text>
           </View>
@@ -510,13 +818,13 @@ export default function PaymentCollectionScreen() {
             <View style={styles.fareBreakdownItem}>
               <Text style={styles.fareBreakdownLabel}>Distance Cost</Text>
               <Text style={styles.fareBreakdownValue}>
-                ${safeParse(pricingBreakdown?.distanceCost).toFixed(2)}
+                {CURRENCY_SYMBOL} {safeParse(pricingBreakdown?.distanceCost).toFixed(2)}
               </Text>
             </View>
             <View style={styles.fareBreakdownItem}>
               <Text style={styles.fareBreakdownLabel}>Time Cost</Text>
               <Text style={styles.fareBreakdownValue}>
-                ${safeParse(pricingBreakdown?.durationCost).toFixed(2)}
+                {CURRENCY_SYMBOL} {safeParse(pricingBreakdown?.durationCost).toFixed(2)}
               </Text>
             </View>
           </View>
@@ -524,13 +832,13 @@ export default function PaymentCollectionScreen() {
             <View style={styles.fareBreakdownItem}>
               <Text style={styles.fareBreakdownLabel}>Wait Cost</Text>
               <Text style={styles.fareBreakdownValue}>
-                ${safeParse(pricingBreakdown?.waitingCost).toFixed(2)}
+                {CURRENCY_SYMBOL} {safeParse(pricingBreakdown?.waitingCost).toFixed(2)}
               </Text>
             </View>
             <View style={styles.fareBreakdownItem}>
               <Text style={styles.fareBreakdownLabel}>Base Fare</Text>
               <Text style={styles.fareBreakdownValue}>
-                ${safeParse(pricingBreakdown?.startingPrice).toFixed(2)}
+                {CURRENCY_SYMBOL} {safeParse(pricingBreakdown?.startingPrice).toFixed(2)}
               </Text>
             </View>
           </View>
@@ -661,9 +969,9 @@ export default function PaymentCollectionScreen() {
           <View style={styles.modalContent}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>
-                {selectedMethod === 'EFTPOS' && 'EFTPOS Terminal'}
+                {selectedMethod === 'EFTPOS' && 'EFTPOS (External Terminal)'}
                 {selectedMethod === 'ACCOUNT' && 'Account Number'}
-                {selectedMethod === 'GIFT_CARD' && 'Gift Card Code'}
+                {selectedMethod === 'GIFT_CARD' && 'Fleet Gift Card'}
               </Text>
               <TouchableOpacity
                 onPress={() => setShowDetailsModal(false)}
@@ -674,9 +982,9 @@ export default function PaymentCollectionScreen() {
             </View>
 
             <Text style={styles.modalDescription}>
-              {selectedMethod === 'EFTPOS' && 'Enter the EFTPOS terminal transaction number provided by the customer'}
+              {selectedMethod === 'EFTPOS' && 'Use this only for a separate/external EFTPOS terminal. For debit cards tapped on this phone, pick Tap to Pay instead. Receipt number is optional.'}
               {selectedMethod === 'ACCOUNT' && 'Enter the customer account number to charge this fare to'}
-              {selectedMethod === 'GIFT_CARD' && 'Enter the gift card code to redeem for this payment'}
+              {selectedMethod === 'GIFT_CARD' && 'Enter an AB Taxi-issued gift card code. For Visa/Mastercard prepaid gift cards (Apple, AWS, mall cards), use Tap to Pay or Card (Online) instead.'}
             </Text>
 
             <View style={styles.modalInputGroup}>
@@ -693,7 +1001,7 @@ export default function PaymentCollectionScreen() {
                   else setGiftCardCode(text);
                 }}
                 placeholder={
-                  selectedMethod === 'EFTPOS' ? 'e.g., TXN12345678' :
+                  selectedMethod === 'EFTPOS' ? 'Optional — e.g., TXN12345678' :
                   selectedMethod === 'ACCOUNT' ? 'e.g., ACC-1234' :
                   'e.g., GIFT-ABCD-1234'
                 }
@@ -709,6 +1017,78 @@ export default function PaymentCollectionScreen() {
             >
               <Text style={styles.modalButtonText}>Continue</Text>
             </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Tap to Pay modal — state machine UI. The actual card-tap prompt is
+          rendered full-screen by the Stripe SDK during collectPaymentMethod. */}
+      <Modal
+        visible={tapModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          if (tapStatus === 'success' || tapStatus === 'error' || tapStatus === 'idle') {
+            setTapModalVisible(false);
+          }
+        }}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>
+                {tapStatus === 'success' ? 'Payment Received' :
+                 tapStatus === 'error' ? 'Tap to Pay Failed' :
+                 'Contactless Payment'}
+              </Text>
+              {(tapStatus === 'success' || tapStatus === 'error') && (
+                <TouchableOpacity
+                  onPress={() => setTapModalVisible(false)}
+                  style={styles.modalClose}
+                >
+                  <Icon name="close" size={24} color="#6b7280" />
+                </TouchableOpacity>
+              )}
+            </View>
+
+            <View style={{ alignItems: 'center', paddingVertical: 20 }}>
+              {tapStatus === 'success' ? (
+                <Icon name="check-circle" size={64} color="#10b981" />
+              ) : tapStatus === 'error' ? (
+                <Icon name="alert-circle" size={64} color="#ef4444" />
+              ) : (
+                <ActivityIndicator size="large" color="#0ea5e9" />
+              )}
+
+              <Text style={{ marginTop: 16, fontSize: 16, color: '#374151', textAlign: 'center' }}>
+                {tapStatus === 'permissions' && 'Requesting permissions…'}
+                {tapStatus === 'discovering' && 'Preparing this phone as a reader…'}
+                {tapStatus === 'connecting' && 'Connecting reader…'}
+                {tapStatus === 'ready' && 'Ready. Ask customer to hold their card or phone to the back of yours.'}
+                {tapStatus === 'collecting' && 'Hold customer’s card or phone to the back of this device.'}
+                {tapStatus === 'processing' && 'Processing payment…'}
+                {tapStatus === 'success' && tapReceipt && (
+                  `${CURRENCY_SYMBOL} ${tapReceipt.amount.toFixed(2)} charged` +
+                  (tapReceipt.brand || tapReceipt.last4
+                    ? ` · ${tapReceipt.brand || 'card'}${tapReceipt.last4 ? ` ••${tapReceipt.last4}` : ''}`
+                    : '')
+                )}
+                {tapStatus === 'error' && (tapError || 'Something went wrong.')}
+              </Text>
+            </View>
+
+            {(tapStatus === 'error') && (
+              <TouchableOpacity
+                style={[styles.modalButton, { backgroundColor: '#0ea5e9' }]}
+                onPress={() => {
+                  setTapStatus('idle');
+                  setTapError(null);
+                  setTapModalVisible(false);
+                }}
+              >
+                <Text style={styles.modalButtonText}>Close</Text>
+              </TouchableOpacity>
+            )}
           </View>
         </View>
       </Modal>

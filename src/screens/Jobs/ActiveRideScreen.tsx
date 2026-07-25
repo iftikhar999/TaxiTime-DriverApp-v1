@@ -36,13 +36,20 @@ import KeepAwake from 'react-native-keep-awake';
 import RideMap from '../../components/RideMap';
 import NearbyJobsQueue from '../../components/jobs/NearbyJobsQueue';
 import { useAuth } from '../../context/AuthContext';
+import { formatCurrency } from '../../config/currency';
 import { useJob } from '../../context/JobContext';
 import { useLocation } from '../../context/LocationContext';
 import { useShift } from '../../context/ShiftContext';
+import { useUnreadDispatcher } from '../../context/UnreadDispatcherContext';
+import { calculateDistance } from '../../utils/distance';
 import { fetchCompanySettings, MapProvider } from '../../services/companySettingsService';
+import httpClient from '../../services/httpClient';
+import { getActiveJob } from '../../services/v2/jobService';
+import { ensureConnected, emitAppStateChange } from '../../services/driverSocket';
 import { openExternalNavigation } from '../../utils/navigationHelper';
 import { getWaitingRatePerMinute } from '../../utils/tariffUtils';
 import { normalizeMapProvider } from '../Home/utils/homeScreenUtils';
+import SOSButton from '../../components/SOSButton';
 
 const { width, height } = Dimensions.get('window');
 const SMART_WAIT_DISTANCE_METERS = 8;
@@ -58,10 +65,10 @@ interface ActiveRideScreenProps {}
 
 const ActiveRideScreen: React.FC<ActiveRideScreenProps> = () => {
   const navigation = useNavigation<any>();
-  const { 
-    currentJob, 
-    status, 
-    timer, 
+  const {
+    currentJob,
+    status,
+    timer,
     pricingBreakdown,
     routePoints,
     pauseJob,
@@ -69,11 +76,14 @@ const ActiveRideScreen: React.FC<ActiveRideScreenProps> = () => {
     resumePendingPayment,
     prepareJobForPayment, // ✅ Use prepare instead of complete
     changeTariff, // ✅ NEW: For changing tariff mid-ride
+    updateStatus,
+    clearJob,
   } = useJob();
   
   const { location } = useLocation();
   const { selectedTariff, tariffs: driverTariffs } = useShift(); // ✅ FIX: Use 'tariffs' from ShiftContext
   const { driver } = useAuth();
+  const { unreadCount: dispatcherUnread } = useUnreadDispatcher();
 
   const [mapProvider, setMapProvider] = useState<MapProvider>('NATIVE');
   const [mapProviderLoading, setMapProviderLoading] = useState(false);
@@ -111,6 +121,88 @@ const ActiveRideScreen: React.FC<ActiveRideScreenProps> = () => {
   // ✅ NEW: Tariff change modal
   const [showTariffModal, setShowTariffModal] = useState(false);
   const [showMapModal, setShowMapModal] = useState(false);
+  const [advancingStop, setAdvancingStop] = useState(false);
+  // Guards the "Complete Trip" button against a double-tap that would prepare
+  // payment twice and push two PaymentCollection screens.
+  const [completing, setCompleting] = useState(false);
+
+  // Multi-stop waypoint state. `stops` come from the dispatch-created job;
+  // `currentStopIndex` tracks which one the driver is heading to right now.
+  // 0 = stop[0] (or dropoff if no stops). stops.length = final dropoff.
+  // The source of truth is `job.requirements.currentStopIndex` on the
+  // backend; we hydrate from it + update via POST /jobs/:id/stops/advance.
+  const stopsArray: any[] = useMemo(() => {
+    const stops =
+      (currentJob as any)?.stops ||
+      (currentJob as any)?.requirements?.stops ||
+      [];
+    return Array.isArray(stops) ? stops : [];
+  }, [currentJob]);
+
+  const currentStopIndex: number = useMemo(() => {
+    const raw = (currentJob as any)?.requirements?.currentStopIndex ?? 0;
+    const n = Number(raw);
+    return Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 0;
+  }, [currentJob]);
+
+  // The ONE waypoint the driver should see right now. Everything else is
+  // hidden until the driver taps Continue.
+  const activeWaypoint = useMemo(() => {
+    if (currentStopIndex < stopsArray.length) {
+      const s = stopsArray[currentStopIndex];
+      return {
+        kind: 'STOP' as const,
+        label: `STOP ${s.order || currentStopIndex + 1} OF ${stopsArray.length}`,
+        address: s.address || 'Stop location',
+        latitude: s.latitude,
+        longitude: s.longitude,
+      };
+    }
+    return {
+      kind: 'DROPOFF' as const,
+      label: 'FINAL DESTINATION',
+      address: currentJob?.dropoffAddress || 'Customer will tell you',
+      latitude: currentJob?.dropoffLatitude,
+      longitude: currentJob?.dropoffLongitude,
+    };
+  }, [stopsArray, currentStopIndex, currentJob]);
+
+  const hasMoreStops = currentStopIndex < stopsArray.length;
+
+  const handleAdvanceStop = useCallback(async () => {
+    if (!currentJob?.id || advancingStop) return;
+    setAdvancingStop(true);
+    try {
+      const jobKey = currentJob.id || (currentJob as any).jobId || '';
+      const resp = await httpClient.post(
+        `/mobile/driver/jobs/${jobKey}/stops/advance`,
+      );
+      const data = resp?.data?.data;
+      Toast.show({
+        type: 'success',
+        text1: data?.isFinal ? 'Heading to final destination' : `Heading to next stop`,
+        text2: data?.nextWaypoint?.address,
+        position: 'top',
+        visibilityTime: 2000,
+      });
+      // Mutate the in-memory job so the UI reflects the advance without
+      // waiting for a server re-fetch. The next socket event or refresh
+      // will reconcile authoritative state.
+      const existingReq = ((currentJob as any)?.requirements || {});
+      (currentJob as any).requirements = {
+        ...existingReq,
+        currentStopIndex: data?.currentStopIndex,
+      };
+    } catch (err: any) {
+      Toast.show({
+        type: 'error',
+        text1: 'Failed to advance',
+        text2: err?.response?.data?.message || err?.message || 'Try again',
+      });
+    } finally {
+      setAdvancingStop(false);
+    }
+  }, [currentJob, advancingStop]);
   const activeTariff = useMemo(() => {
     const jobTariff = (currentJob as any)?.tariff;
     if (selectedTariff && jobTariff) {
@@ -142,6 +234,17 @@ const ActiveRideScreen: React.FC<ActiveRideScreenProps> = () => {
 
     return tariffBase ?? breakdownBase ?? 0;
   }, [activeTariff, currentJob, pricingBreakdown]);
+
+  // ✅ Navigate back to Home when job is cleared (recalled by dispatcher)
+  useEffect(() => {
+    if (!currentJob) {
+      const timer = setTimeout(() => {
+        console.log('🔙 ActiveRideScreen: Job cleared, navigating back to Home');
+        navigation.navigate('Home');
+      }, 100);
+      return () => clearTimeout(timer);
+    }
+  }, [currentJob, navigation]);
 
   useFocusEffect(
     useCallback(() => {
@@ -340,15 +443,67 @@ const ActiveRideScreen: React.FC<ActiveRideScreenProps> = () => {
   }, [isJobRunning, timer?.elapsedSeconds]);
 
   useEffect(() => {
-    const handleAppStateChange = (nextState: AppStateStatus) => {
-      if (nextState === 'active') {
-        elapsedSyncRef.current = Date.now();
-        setDisplayElapsedSeconds(Math.max(0, Math.round(elapsedBaseRef.current)));
+    // Drivers routinely jump to Google Maps / Waze mid-trip. When they come
+    // back we need to: (a) correct the on-screen meter reading, (b) make sure
+    // the socket is still up so status/location updates flow, and (c) re-pull
+    // authoritative job state so we don't keep running the meter on a job the
+    // dispatcher already cancelled/recalled while the driver was away.
+    const handleAppStateChange = async (nextState: AppStateStatus) => {
+      if (nextState !== 'active') {
+        if (nextState === 'background' || nextState === 'inactive') {
+          try { emitAppStateChange('BACKGROUND'); } catch {}
+        }
+        return;
+      }
+
+      elapsedSyncRef.current = Date.now();
+      setDisplayElapsedSeconds(Math.max(0, Math.round(elapsedBaseRef.current)));
+
+      try { ensureConnected(); } catch {}
+      try { emitAppStateChange('ACTIVE'); } catch {}
+
+      const localJobId = currentJob?.id;
+      if (!localJobId) return;
+
+      try {
+        const serverJob: any = await getActiveJob();
+
+        // Server says: no active job. It was cancelled / recalled / reassigned
+        // / completed while the driver was in the background. Clear local
+        // state and return to home so the driver doesn't keep a zombie meter.
+        if (!serverJob) {
+          Toast.show({
+            type: 'info',
+            text1: 'Job ended',
+            text2: 'This job is no longer active. Returning to home.',
+            visibilityTime: 3000,
+          });
+          try { clearJob(); } catch {}
+          try { (navigation as any).reset({ index: 0, routes: [{ name: 'Home' }] }); } catch {}
+          return;
+        }
+
+        // Server has a DIFFERENT active job than we think we're on — treat the
+        // old one as gone, bail to home so re-hydration picks up the real one.
+        if (serverJob.id && serverJob.id !== localJobId) {
+          try { clearJob(); } catch {}
+          try { (navigation as any).reset({ index: 0, routes: [{ name: 'Home' }] }); } catch {}
+          return;
+        }
+
+        // Same job, possibly drifted status — sync if we're out of date.
+        if (serverJob.status && serverJob.status !== status) {
+          try { updateStatus(serverJob.status as any); } catch {}
+        }
+      } catch (err) {
+        // Soft-fail: if the sync call errors, we keep whatever state we had.
+        console.warn('[ActiveRide] foreground re-sync failed', (err as any)?.message);
       }
     };
+
     const subscription = AppState.addEventListener('change', handleAppStateChange);
     return () => subscription.remove();
-  }, []);
+  }, [currentJob?.id, status, updateStatus, clearJob, navigation]);
   
   // Calculate coordinates
   const pickupCoord = useMemo(() => {
@@ -499,6 +654,8 @@ const ActiveRideScreen: React.FC<ActiveRideScreenProps> = () => {
   }, [pauseJob, navigation]);
   
   const handleComplete = useCallback(async () => {
+    if (completing) return; // ignore double-taps
+    setCompleting(true);
     try {
       console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
       console.log('💰 COMPLETING JOB - PAYMENT FLOW START');
@@ -525,8 +682,10 @@ const ActiveRideScreen: React.FC<ActiveRideScreenProps> = () => {
         return;
       }
 
-      // ✅ FIX: Use currentFare directly (already calculated correctly above)
-      const finalAmount = currentFare > 0 ? currentFare : 0;
+      // ✅ FIX: Use currentFare, but fall back to tariff base fare if 0
+      // This ensures minimum charge is always the base/flag-drop fare
+      const tariffMinimum = resolvedBaseFare > 0 ? resolvedBaseFare : 0;
+      const finalAmount = currentFare > 0 ? currentFare : tariffMinimum;
 
       console.log('💸 NAVIGATING TO PAYMENT SCREEN:', {
         jobId: preparedJob.id,
@@ -547,7 +706,7 @@ const ActiveRideScreen: React.FC<ActiveRideScreenProps> = () => {
       Toast.show({
         type: 'success',
         text1: 'Ride Ended',
-        text2: `Collect $${finalAmount.toFixed(2)}`,
+        text2: `Collect ${formatCurrency(finalAmount)}`,
       });
     } catch (error) {
       console.error('❌ Failed to prepare job for payment:', error);
@@ -556,8 +715,10 @@ const ActiveRideScreen: React.FC<ActiveRideScreenProps> = () => {
         text1: 'Failed to Prepare',
         text2: 'Please try again',
       });
+    } finally {
+      setCompleting(false); // re-enable so a failed attempt can be retried
     }
-  }, [prepareJobForPayment, navigation, currentFare, timer, pricingBreakdown, selectedTariff]);
+  }, [completing, prepareJobForPayment, navigation, currentFare, timer, pricingBreakdown, selectedTariff]);
   
   // ✅ NEW: Handle tariff change during active ride
   const handleTariffChange = useCallback(async (newTariff: any) => {
@@ -621,7 +782,7 @@ const ActiveRideScreen: React.FC<ActiveRideScreenProps> = () => {
   }
   
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
+    <SafeAreaView style={styles.container} edges={['top', 'bottom', 'left', 'right']}>
       {/* ✅ KEEP SCREEN AWAKE - Prevent device sleep during active ride */}
       <KeepAwake />
       
@@ -633,15 +794,52 @@ const ActiveRideScreen: React.FC<ActiveRideScreenProps> = () => {
             #{(currentJob?.publicJobId || currentJob?.id || '---').slice(0, 6)}
           </Text>
         </View>
-        <TouchableOpacity
-          style={styles.navButton}
-          onPress={handleNavigation}
-          activeOpacity={0.7}
-        >
-          <Icon name="navigation-variant" size={18} color="#fff" />
-        </TouchableOpacity>
+        <View style={{flexDirection: 'row'}}>
+          {/* 💬 Chat with passenger — opens PassengerChatScreen */}
+          {currentJob?.customer?.id && (
+            <TouchableOpacity
+              style={[styles.navButton, {marginRight: 8, backgroundColor: 'rgba(255,209,102,0.2)'}]}
+              onPress={() => navigation.navigate('PassengerChat' as never, {
+                jobId: currentJob?.id,
+                passengerId: currentJob?.customer?.id,
+                passengerName: currentJob?.customer?.name || currentJob?.customer?.firstName,
+              } as never)}
+              activeOpacity={0.7}
+            >
+              <Icon name="message-text" size={18} color="#FFD166" />
+            </TouchableOpacity>
+          )}
+          {/* 🎧 Chat with dispatcher — reachable mid-ride for routing
+                changes, customer issues, or company comms. Badge shows
+                unread count when DispatcherChat screen isn't open. */}
+          <TouchableOpacity
+            style={[styles.navButton, {marginRight: 8, backgroundColor: 'rgba(96,165,250,0.2)'}]}
+            onPress={() => navigation.navigate('DispatcherChat' as never)}
+            activeOpacity={0.7}
+          >
+            <Icon name="headset" size={18} color="#60a5fa" />
+            {dispatcherUnread > 0 ? (
+              <View style={styles.dispatcherUnreadBadge}>
+                <Text style={styles.dispatcherUnreadBadgeText}>
+                  {dispatcherUnread > 9 ? '9+' : dispatcherUnread}
+                </Text>
+              </View>
+            ) : null}
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.navButton, {marginRight: 8}]}
+            onPress={handleNavigation}
+            activeOpacity={0.7}
+          >
+            <Icon name="navigation-variant" size={18} color="#fff" />
+          </TouchableOpacity>
+          {/* 🚨 Emergency SOS — compact icon aligned with chat/nav buttons.
+                Hold 2s to confirm + send. Placed here so it's always
+                visible without blocking the map/fare display. */}
+          <SOSButton compact iconSize={18} buttonStyle={styles.headerSosButton} />
+        </View>
       </View>
-      
+
       {/* Professional Movement Status Bar */}
       <View style={[
         styles.statusBar,
@@ -682,7 +880,7 @@ const ActiveRideScreen: React.FC<ActiveRideScreenProps> = () => {
               </View>
             </View>
             <Animated.Text style={[styles.meterFare, { transform: [{ scale: pulseAnim }] }]}>
-              ${(Number(currentFare) || 0).toFixed(2)}
+              {formatCurrency(Number(currentFare) || 0)}
             </Animated.Text>
           </View>
 
@@ -691,13 +889,13 @@ const ActiveRideScreen: React.FC<ActiveRideScreenProps> = () => {
             <View style={styles.statBox}>
               <Text style={styles.statValue}>{((timer?.distanceMeters || 0) / 1000).toFixed(2)}</Text>
               <Text style={styles.statUnit}>KM</Text>
-              <Text style={styles.statCost}>${fareDetails.distance.toFixed(2)}</Text>
+              <Text style={styles.statCost}>{formatCurrency(fareDetails.distance)}</Text>
             </View>
             <View style={styles.statDivider} />
             <View style={styles.statBox}>
               <Text style={styles.statValue}>{formatTime(displayElapsedSeconds)}</Text>
               <Text style={styles.statUnit}>TIME</Text>
-              <Text style={styles.statCost}>${fareDetails.time.toFixed(2)}</Text>
+              <Text style={styles.statCost}>{formatCurrency(fareDetails.time)}</Text>
             </View>
             <View style={styles.statDivider} />
             <View style={styles.statBox}>
@@ -706,7 +904,7 @@ const ActiveRideScreen: React.FC<ActiveRideScreenProps> = () => {
                 {movementStatus.waitingReady ? 'WAITING' : 'WAIT'}
               </Text>
               <Text style={[styles.statCost, movementStatus.waitingReady && styles.waitingActiveCost]}>
-                ${fareDetails.waiting.toFixed(2)}
+                {formatCurrency(fareDetails.waiting)}
               </Text>
             </View>
             <View style={styles.statDivider} />
@@ -731,6 +929,7 @@ const ActiveRideScreen: React.FC<ActiveRideScreenProps> = () => {
             pickup={pickupCoord}
             dropoff={dropoffCoord}
             driver={driverCoord}
+            stops={currentJob?.stops}
             route={routeCoordinates}
             style={styles.map}
             enable3D={true}
@@ -747,24 +946,72 @@ const ActiveRideScreen: React.FC<ActiveRideScreenProps> = () => {
           )}
         </View>
         
-        {/* Nearby Jobs Queue - Smart job queuing system */}
-        <NearbyJobsQueue />
+        {/* Nearby Jobs Queue - Only show when within 3km of dropoff */}
+        {(() => {
+          // Only show nearby jobs if driver is approaching dropoff
+          if (!dropoffCoord || !location?.latitude || !location?.longitude) {
+            return null; // No dropoff or driver location, don't show
+          }
+          
+          const distanceToDropoff = calculateDistance(
+            location.latitude,
+            location.longitude,
+            dropoffCoord.latitude,
+            dropoffCoord.longitude
+          );
+          
+          // Only show nearby jobs when within 3km of dropoff
+          if (distanceToDropoff > 3) {
+            return null;
+          }
+          
+          return <NearbyJobsQueue />;
+        })()}
         
-        {/* Trip Info */}
+        {/* Trip Info — shows ONE waypoint at a time. Drivers get confused
+            when all stops + the final dropoff are listed simultaneously.
+            The sequential card + "Continue" button matches how Uber/Careem
+            guide drivers through multi-stop trips. */}
         <View style={styles.tripInfo}>
           <View style={styles.tripRow}>
-            <Icon name="account-circle" size={16} color="#94a3b8" />
-            <Text style={styles.tripText}>{currentJob?.passenger?.name || 'Passenger'}</Text>
-            {currentJob?.passenger?.phone && (
-              <Text style={styles.tripPhone}>{currentJob.passenger.phone}</Text>
-            )}
+            <Icon
+              name={activeWaypoint.kind === 'STOP' ? 'map-marker-path' : 'flag-checkered'}
+              size={20}
+              color={activeWaypoint.kind === 'STOP' ? '#f59e0b' : '#22c55e'}
+            />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.tripLabel}>{activeWaypoint.label}</Text>
+              <Text style={styles.tripText} numberOfLines={2}>
+                {activeWaypoint.address}
+              </Text>
+            </View>
           </View>
-          <View style={styles.tripRow}>
-            <Icon name="flag-checkered" size={16} color="#94a3b8" />
-            <Text style={styles.tripText} numberOfLines={1}>
-              {currentJob?.dropoffAddress || 'Destination'}
-            </Text>
-          </View>
+
+          {/* Tiny progress strip: "1 of 3" style indicator if multi-stop */}
+          {stopsArray.length > 0 && (
+            <View style={{ flexDirection: 'row', marginTop: 10, gap: 4 }}>
+              {stopsArray.map((_, i) => (
+                <View
+                  key={`tick-${i}`}
+                  style={{
+                    flex: 1,
+                    height: 3,
+                    borderRadius: 2,
+                    backgroundColor: i < currentStopIndex ? '#22c55e' : 'rgba(245,158,11,0.4)',
+                  }}
+                />
+              ))}
+              <View
+                style={{
+                  flex: 1,
+                  height: 3,
+                  borderRadius: 2,
+                  backgroundColor:
+                    currentStopIndex >= stopsArray.length ? '#22c55e' : 'rgba(34,197,94,0.3)',
+                }}
+              />
+            </View>
+          )}
         </View>
       </ScrollView>
       
@@ -792,15 +1039,36 @@ const ActiveRideScreen: React.FC<ActiveRideScreenProps> = () => {
           </TouchableOpacity>
         </View>
         
-        {/* Complete Ride - Primary Action */}
-        <TouchableOpacity
-          style={styles.primaryButton}
-          onPress={handleComplete}
-          activeOpacity={0.8}
-        >
-          <Icon name="check-bold" size={20} color="#000" />
-          <Text style={styles.primaryButtonText}>COMPLETE TRIP</Text>
-        </TouchableOpacity>
+        {/* Primary action changes based on whether more stops remain.
+            With stops → "Arrived, continue to next stop" (advances the
+            currentStopIndex). At final dropoff → "Complete Trip". */}
+        {hasMoreStops ? (
+          <TouchableOpacity
+            style={[styles.primaryButton, { backgroundColor: '#f59e0b' }]}
+            onPress={handleAdvanceStop}
+            disabled={advancingStop}
+            activeOpacity={0.8}
+          >
+            {advancingStop ? (
+              <ActivityIndicator color="#000" />
+            ) : (
+              <>
+                <Icon name="map-marker-check" size={20} color="#000" />
+                <Text style={styles.primaryButtonText}>ARRIVED — NEXT STOP</Text>
+              </>
+            )}
+          </TouchableOpacity>
+        ) : (
+          <TouchableOpacity
+            style={[styles.primaryButton, completing && { opacity: 0.6 }]}
+            onPress={handleComplete}
+            activeOpacity={0.8}
+            disabled={completing}
+          >
+            <Icon name="check-bold" size={20} color="#000" />
+            <Text style={styles.primaryButtonText}>{completing ? 'COMPLETING…' : 'COMPLETE TRIP'}</Text>
+          </TouchableOpacity>
+        )}
       </View>
       
       {/* Full-Screen Map Modal */}
@@ -836,6 +1104,7 @@ const ActiveRideScreen: React.FC<ActiveRideScreenProps> = () => {
               pickup={pickupCoord}
               dropoff={dropoffCoord}
               driver={driverCoord}
+              stops={currentJob?.stops}
               route={routeCoordinates}
               style={styles.mapModalMap}
               enable3D
@@ -982,6 +1251,36 @@ const styles = StyleSheet.create({
     backgroundColor: '#333',
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  // SOS button sized/shaped to match the 36×36 header icons so it reads as a
+  // peer action rather than a giant FAB looming over the ride controls.
+  headerSosButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 4,
+    paddingVertical: 0,
+    paddingHorizontal: 0,
+  },
+  // Unread badge on the dispatcher-chat header icon.
+  dispatcherUnreadBadge: {
+    position: 'absolute',
+    top: -4,
+    right: -4,
+    minWidth: 16,
+    height: 16,
+    borderRadius: 8,
+    paddingHorizontal: 3,
+    backgroundColor: '#ef4444',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1.5,
+    borderColor: '#1a1a1a',
+  },
+  dispatcherUnreadBadgeText: {
+    color: '#fff',
+    fontSize: 9,
+    fontWeight: '800',
+    lineHeight: 11,
   },
   // Professional Status Bar
   statusBar: {
@@ -1359,9 +1658,17 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
   },
+  tripLabel: {
+    fontSize: 9,
+    fontWeight: '600',
+    color: '#666',
+    letterSpacing: 1,
+    marginBottom: 4,
+  },
   tripText: {
-    fontSize: 11,
-    color: '#ccc',
+    fontSize: 13,
+    fontWeight: '500',
+    color: '#22c55e',
     flex: 1,
   },
   tripPhone: {

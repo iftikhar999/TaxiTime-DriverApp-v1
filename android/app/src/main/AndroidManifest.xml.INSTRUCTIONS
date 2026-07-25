@@ -25,7 +25,7 @@ Add these permissions to your `android/app/src/main/AndroidManifest.xml`:
   
   <!-- ✅ NEW: Foreground Service for Active Shift -->
   <service
-    android:name="com.taxitime.driverv1.ForegroundService"
+    android:name="com.taxitime.driverapp.ForegroundService"
     android:foregroundServiceType="location"
     android:enabled="true"
     android:exported="false" />

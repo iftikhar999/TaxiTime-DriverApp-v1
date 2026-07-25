@@ -1,10 +1,16 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import Geolocation, {
+  GeolocationError,
+  GeolocationResponse,
+} from "@react-native-community/geolocation";
 import { detectZoneAndGetTariffs } from "./zoneService";
 
 export interface LocationData {
   latitude: number;
   longitude: number;
   accuracy?: number;
+  heading?: number;
+  speed?: number;
   timestamp: number;
 }
 
@@ -14,12 +20,21 @@ export interface LocationUpdateCallback {
   onError: (error: string) => void;
 }
 
+// ⚠️ Mock-location fallback removed (2026-04-22).
+// Previously this file carried a `USE_MOCK_LOCATION` flag + hardcoded Doha
+// coordinates. Shipping that in a release build was a foot-gun — a flipped
+// flag in a hurry would have a production driver reporting fake GPS, which
+// breaks fare calculation, ETA, and accountability. If you need mock GPS
+// for local development, use Android Studio's Emulator GPS panel or
+// `adb emu geo fix <lng> <lat>` — don't re-add it to this file.
+
 class LocationService {
   private currentLocation: LocationData | null = null;
   private currentZone: any | null = null;
   private callbacks: LocationUpdateCallback[] = [];
   private isTracking = false;
   private zoneCheckInterval: any = null;
+  private watchId: number | null = null;
 
   /**
    * Start location tracking
@@ -33,8 +48,7 @@ class LocationService {
 
       this.isTracking = true;
 
-      // Simulate location updates for testing (replace with actual GPS later)
-      this.simulateLocationUpdates(driverId, companyId);
+      this.beginRealGpsWatch(driverId, companyId);
 
       // Set up periodic zone checking (every 30 seconds)
       this.zoneCheckInterval = setInterval(() => {
@@ -64,24 +78,64 @@ class LocationService {
       this.zoneCheckInterval = null;
     }
 
+    if (this.watchId !== null) {
+      try {
+        Geolocation.clearWatch(this.watchId);
+      } catch (error) {
+        console.warn("⚠️ Failed to clear geolocation watch:", error);
+      }
+      this.watchId = null;
+    }
+
     this.isTracking = false;
     this.currentLocation = null;
     this.currentZone = null;
   }
 
   /**
-   * Simulate location updates for testing (replace with actual GPS later)
+   * Subscribe to real GPS fixes via @react-native-community/geolocation.
+   * Also issues an immediate getCurrentPosition so we don't wait for the first
+   * watch callback (iOS can take several seconds).
    */
-  private simulateLocationUpdates(driverId: string, companyId: string): void {
-    // Simulate Doha, Qatar location (you can change this)
-    const testLocation: LocationData = {
-      latitude: 25.2854,
-      longitude: 51.531,
-      accuracy: 10,
-      timestamp: Date.now(),
+  private beginRealGpsWatch(driverId: string, companyId: string): void {
+    const onPosition = (pos: GeolocationResponse) => {
+      const fix: LocationData = {
+        latitude: pos.coords.latitude,
+        longitude: pos.coords.longitude,
+        accuracy: pos.coords.accuracy ?? undefined,
+        heading: pos.coords.heading ?? undefined,
+        speed: pos.coords.speed ?? undefined,
+        timestamp: pos.timestamp ?? Date.now(),
+      };
+      void this.handleLocationUpdate(fix, driverId, companyId);
     };
 
-    this.handleLocationUpdate(testLocation, driverId, companyId);
+    const onError = (error: GeolocationError) => {
+      console.error("❌ Geolocation error:", error);
+      this.notifyError(
+        `Geolocation error: ${error?.message || "unknown"} (code ${error?.code ?? "?"})`
+      );
+    };
+
+    try {
+      Geolocation.getCurrentPosition(onPosition, onError, {
+        enableHighAccuracy: true,
+        timeout: 15000,
+        maximumAge: 10000,
+      });
+
+      this.watchId = Geolocation.watchPosition(onPosition, onError, {
+        enableHighAccuracy: true,
+        distanceFilter: 5,
+        interval: 3000,
+        fastestInterval: 2000,
+      }) as unknown as number;
+    } catch (error) {
+      console.error("❌ Failed to start geolocation watch:", error);
+      this.notifyError(
+        `Failed to start GPS: ${(error as Error).message}`
+      );
+    }
   }
 
   /**

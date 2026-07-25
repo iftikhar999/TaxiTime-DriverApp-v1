@@ -3,14 +3,15 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
     ActivityIndicator,
     Dimensions,
+    Linking,
     Modal,
-    SafeAreaView,
     ScrollView,
     StyleSheet,
     Text,
     TouchableOpacity,
     View,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import Toast from 'react-native-toast-message';
 import MCIcon from 'react-native-vector-icons/MaterialCommunityIcons';
 import JobOfferMap from '../../components/JobOfferMap';
@@ -21,7 +22,8 @@ import { useShift } from '../../context/ShiftContext';
 import { calculateDistance } from '../../utils/distance';
 import { getWaitingRatePerMinute } from '../../utils/tariffUtils';
 
-const { width } = Dimensions.get('window');
+const { width, height } = Dimensions.get('window');
+const MAP_HEIGHT = Math.min(height * 0.35, 300); // 35% of screen or max 300px, whichever is smaller
 
 const THEME = {
   background: '#040b1d',
@@ -330,238 +332,164 @@ const EnhancedJobTrackingScreen: React.FC = () => {
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView style={styles.content} contentContainerStyle={styles.contentContainer}>
-        <View style={styles.heroCard}>
-          <View style={styles.heroTextBlock}>
-            <Text style={styles.heroLabel}>Active Assignment</Text>
-            <Text style={styles.heroJob}>{displayJobReference}</Text>
-            <Text style={styles.heroMeta}>{pickupAddress}</Text>
-          </View>
-          <View style={[styles.statusChip, getStatusPillStyle(status)]}>
-            <MCIcon name={getStatusIcon(status)} size={20} color="#fff" />
-            <Text style={styles.statusChipText}>{getStatusLabel(status)}</Text>
-          </View>
+        {/* Compact Status Chip */}
+        <View style={[styles.statusChip, getStatusPillStyle(status)]}>
+          <MCIcon name={getStatusIcon(status)} size={14} color="#fff" />
+          <Text style={styles.statusChipText}>{getStatusLabel(status)}</Text>
         </View>
 
+        {/* Compact Stats - 2 Items Only */}
         <View style={styles.quickStatsRow}>
           <View style={styles.quickStat}>
-            <MCIcon name="map-marker-distance" size={20} color={THEME.info} />
+            <MCIcon name="map-marker-distance" size={18} color={THEME.info} />
             <Text style={styles.quickStatLabel}>Distance</Text>
             <Text style={styles.quickStatValue}>{estimatedDistanceLabel}</Text>
           </View>
           <View style={styles.quickStat}>
-            <MCIcon name="clock-outline" size={20} color={THEME.accent} />
+            <MCIcon name="clock-outline" size={18} color={THEME.accent} />
             <Text style={styles.quickStatLabel}>ETA</Text>
             <Text style={styles.quickStatValue}>{estimatedDurationLabel}</Text>
           </View>
-          <View style={styles.quickStat}>
-            <MCIcon name="cash" size={20} color={THEME.success} />
-            <Text style={styles.quickStatLabel}>Est. Fare</Text>
-            <Text style={styles.quickStatValue}>${estimatedFareDisplay}</Text>
-          </View>
         </View>
 
-        {/* Tariff Card */}
-        <View style={styles.tariffCard}>
-          <View style={styles.tariffHeader}>
-            <MCIcon name="steering" size={20} color="#fbbf24" />
-            <Text style={styles.tariffTitle}>Tariff: {tariffName}</Text>
-          </View>
-          {selectedTariff && (
-            <View style={styles.tariffDetails}>
-              <Text style={styles.tariffDetail}>S: ${(Number(selectedTariff.baseFare) || 0).toFixed(2)}</Text>
-              <Text style={styles.tariffDetail}>D: ${(Number(selectedTariff.perKmRate) || 0).toFixed(2)}/km</Text>
-              <Text style={styles.tariffDetail}>T: ${(Number(selectedTariff.perMinuteRate) || 0).toFixed(2)}/min</Text>
-              <Text style={styles.tariffDetail}>W: ${(Number(waitingRate) || 0).toFixed(2)}/min</Text>
-            </View>
-          )}
-        </View>
-
-        {/* Total Fare Card - Only show when job is STARTED or later */}
-        {isRideActive && (
-          <View style={styles.fareCard}>
-            <Text style={styles.fareLabel}>TOTAL FARE</Text>
-            <View style={styles.fareRow}>
-              <MCIcon name="cash-multiple" size={40} color="#fbbf24" />
-              <Text style={styles.fareAmount}>${(fareBreakdown?.totalFare ?? 0).toFixed(2)}</Text>
-            </View>
-
-            {/* Metrics Grid */}
-            <View style={styles.metricsGrid}>
-            <View style={styles.metricItem}>
-              <MCIcon name="clock-outline" size={18} color="#60a5fa" />
-              <Text style={styles.metricLabel}>TIME</Text>
-              <Text style={styles.metricValue}>{formatTime(timer?.elapsedSeconds ?? 0)}</Text>
-            </View>
-            <View style={styles.metricItem}>
-              <MCIcon name="map-marker-distance" size={18} color="#34d399" />
-              <Text style={styles.metricLabel}>TRAVELLED</Text>
-              <Text style={styles.metricValue}>{((timer?.distanceMeters ?? 0) / 1000).toFixed(2)} km</Text>
-            </View>
-            <View style={styles.metricItem}>
-              <MCIcon name="cash" size={18} color="#fbbf24" />
-              <Text style={styles.metricLabel}>LIVE FARE</Text>
-              <Text style={styles.metricValue}>${(fareBreakdown?.liveFare ?? 0).toFixed(2)}</Text>
-            </View>
-          </View>
-
-          {/* Fare Breakdown Circle */}
-          <View style={styles.fareBreakdownContainer}>
-            <View style={styles.fareBreakdown}>
-              {/* Start */}
-              <View style={[styles.fareComponent, styles.fareComponentTop]}>
-                <View style={[styles.fareCircle, styles.fareCircleActive]}>
-                  <Text style={styles.fareCircleLabel}>START</Text>
-                  <Text style={styles.fareCircleValue}>${(fareBreakdown?.start ?? 0).toFixed(2)}</Text>
-                </View>
-              </View>
-
-              {/* Center indicator */}
-              <View style={styles.fareCenterIndicator} />
-
-              {/* Distance */}
-              <View style={[styles.fareComponent, styles.fareComponentRight]}>
-                <Text style={styles.fareComponentLabel}>DISTANCE</Text>
-                <Text style={styles.fareComponentValue}>${(fareBreakdown?.distance ?? 0).toFixed(2)}</Text>
-              </View>
-
-              {/* Time */}
-              <View style={[styles.fareComponent, styles.fareComponentLeft]}>
-                <Text style={styles.fareComponentLabel}>TIME</Text>
-                <Text style={styles.fareComponentValue}>${(fareBreakdown?.time ?? 0).toFixed(2)}</Text>
-              </View>
-
-              {/* Waiting */}
-              <View style={[styles.fareComponent, styles.fareComponentBottom]}>
-                <Text style={styles.fareComponentLabel}>WAITING</Text>
-                <Text style={styles.fareComponentValue}>
-                  ${(fareBreakdown?.waiting ?? 0).toFixed(2)} 
-                  {(timer?.waitingSeconds ?? 0) > 0 && ` (${timer?.waitingSeconds ?? 0}s)`}
-                </Text>
-              </View>
-            </View>
-          </View>
-
-          {/* Start/Distance/Waiting Summary */}
-          <View style={styles.fareSummary}>
-            <Text style={styles.fareSummaryText}>
-              Start: <Text style={styles.fareSummaryValue}>${(fareBreakdown?.start ?? 0).toFixed(2)}</Text>
-            </Text>
-            <Text style={styles.fareSummaryText}>
-              Distance: <Text style={styles.fareSummaryValue}>${(fareBreakdown?.distance ?? 0).toFixed(2)}</Text>
-            </Text>
-            <Text style={styles.fareSummaryText}>
-              Waiting: <Text style={styles.fareSummaryValue}>${(fareBreakdown?.waiting ?? 0).toFixed(2)}</Text>
-              {(timer?.waitingSeconds ?? 0) > 0 && (
-                <Text style={styles.fareSummaryWaiting}> ({timer?.waitingSeconds ?? 0}s)</Text>
-              )}
-            </Text>
-          </View>
-          </View>
-        )}
-
-        {/* Trip Details */}
+        {/* Customer Location */}
         <View style={styles.tripCard}>
-          <Text style={styles.sectionTitle}>TRIP DETAILS</Text>
           <View style={styles.tripRow}>
-            <MCIcon name="map-marker" size={20} color="#22c55e" />
+            <MCIcon name="account" size={18} color="#22c55e" />
             <View style={styles.tripInfo}>
-              <Text style={styles.tripLabel}>PICKUP</Text>
+              <Text style={styles.tripLabel}>CUSTOMER LOCATION</Text>
               <Text style={styles.tripValue}>{pickupAddress}</Text>
             </View>
           </View>
-          <View style={styles.tripRow}>
-            <MCIcon name="flag" size={20} color="#f87171" />
-            <View style={styles.tripInfo}>
-              <Text style={styles.tripLabel}>DROPOFF</Text>
-              <Text style={styles.tripValue}>{dropoffAddress}</Text>
-            </View>
-          </View>
-          <View style={styles.tripMeta}>
-            <View style={styles.tripMetaItem}>
-              <MCIcon name="map-marker-distance" size={16} color="#60a5fa" />
-              <Text style={styles.tripMetaText}>
-                {isPrePickupPhase
-                  ? distanceToPickupKm === null
-                    ? 'Distance: calculating…'
-                    : `To pickup ${distanceToPickupKm.toFixed(1)} km`
-                  : `Planned ${currentJob?.distance ? currentJob.distance.toFixed(1) : '0.0'} km`}
-              </Text>
-            </View>
-            <View style={styles.tripMetaItem}>
-              <MCIcon name="clock-outline" size={16} color="#38bdf8" />
-              <Text style={styles.tripMetaText}>
-                {isPrePickupPhase
-                  ? etaToPickupMin === null
-                    ? 'ETA: calculating…'
-                    : `ETA ${Math.round(etaToPickupMin)} min`
-                  : `ETA ${currentJob?.estimatedDuration ? Math.round(currentJob.estimatedDuration) : 'N/A'} min`}
-              </Text>
-            </View>
-          </View>
         </View>
 
+        {/* Customer Details - Show when ARRIVED or later */}
+        {['ARRIVED', 'STARTED', 'ACTIVE', 'REACHED', 'PENDING_PAYMENT'].includes(status) && (
+          <View style={styles.tripCard}>
+            <View style={styles.tripRow}>
+              <MCIcon name="account-circle" size={18} color={THEME.info} />
+              <View style={styles.tripInfo}>
+                <Text style={styles.tripLabel}>CUSTOMER DETAILS</Text>
+                <Text style={styles.tripValue}>
+                  {currentJob?.passenger?.name || currentJob?.customer?.name || 'Not available, contact dispatch'}
+                </Text>
+              </View>
+            </View>
+            {(() => {
+              const phoneNumber = currentJob?.passenger?.phone || currentJob?.customer?.phone;
+              const isValidPhone = phoneNumber && 
+                phoneNumber.length > 5 && 
+                !phoneNumber.includes('000000') && 
+                phoneNumber !== 'N/A';
+              
+              if (isValidPhone) {
+                return (
+                  <TouchableOpacity
+                    style={styles.phoneButton}
+                    onPress={() => {
+                      Linking.openURL(`tel:${phoneNumber}`);
+                    }}
+                    activeOpacity={0.7}
+                  >
+                    <MCIcon name="phone" size={18} color="#fff" />
+                    <Text style={styles.phoneButtonText}>{phoneNumber}</Text>
+                  </TouchableOpacity>
+                );
+              } else {
+                return (
+                  <View style={styles.phoneButtonDisabled}>
+                    <MCIcon name="phone-off" size={18} color="#64748b" />
+                    <Text style={styles.phoneButtonDisabledText}>N/A</Text>
+                  </View>
+                );
+              }
+            })()}
+          </View>
+        )}
+
+        {/* Dropoff Location - Show after STARTED */}
+        {['STARTED', 'ACTIVE', 'REACHED', 'PENDING_PAYMENT'].includes(status) && (
+          <View style={styles.tripCard}>
+            <View style={styles.tripRow}>
+              <MCIcon name="map-marker" size={18} color={THEME.danger} />
+              <View style={styles.tripInfo}>
+                <Text style={styles.tripLabel}>DROP-OFF LOCATION</Text>
+                <Text style={styles.tripValue}>
+                  {dropoffCoordinate && currentJob?.dropoffAddress
+                    ? currentJob.dropoffAddress
+                    : 'Customer will tell you the destination'}
+                </Text>
+              </View>
+            </View>
+          </View>
+        )}
+
+        {/* Intermediate Stops - Show after STARTED (same as dropoff) */}
+        {['STARTED', 'ACTIVE', 'REACHED', 'PENDING_PAYMENT'].includes(status) &&
+          currentJob?.stops && currentJob.stops.length > 0 && (
+          <View style={styles.tripCard}>
+            {currentJob.stops.map((stop: any, index: number) => (
+              <View key={`stop-${index}`} style={[styles.tripRow, index > 0 && { marginTop: 8 }]}>
+                <View style={{
+                  backgroundColor: '#f59e0b',
+                  borderRadius: 10,
+                  width: 20,
+                  height: 20,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}>
+                  <Text style={{ color: '#fff', fontSize: 11, fontWeight: '700' }}>
+                    {stop.order || index + 1}
+                  </Text>
+                </View>
+                <View style={styles.tripInfo}>
+                  <Text style={styles.tripLabel}>STOP {stop.order || index + 1}</Text>
+                  <Text style={styles.tripValue}>
+                    {stop.address || 'Stop location'}
+                  </Text>
+                </View>
+              </View>
+            ))}
+          </View>
+        )}
+
+        {/* Map Navigation for Pre-Pickup Only */}
         {isPrePickupPhase && hasPickupAndDriver && (
           <View style={styles.navigationCard}>
-            <View style={styles.navigationHeader}>
-              <View>
-                <Text style={styles.navigationTitle}>Pickup Navigation</Text>
-                <Text style={styles.navigationSubtitle}>Smart routes & live distance</Text>
-              </View>
-              <TouchableOpacity
-                style={styles.mapExpandButton}
-                activeOpacity={0.8}
-                onPress={() => setShowMapModal(true)}
-              >
-                <MCIcon name="fullscreen" size={16} color="#fff" />
-                <Text style={styles.mapExpandText}>Full Map</Text>
-              </TouchableOpacity>
-            </View>
-
-            <View style={styles.navigationStatsRow}>
-              <View style={styles.navigationChip}>
-                <MCIcon name="map-marker-distance" size={16} color={THEME.info} />
-                <Text style={styles.navigationChipLabel}>Distance</Text>
-                <Text style={styles.navigationChipValue}>
-                  {distanceToPickupKm === null ? '—' : `${distanceToPickupKm.toFixed(1)} km`}
-                </Text>
-              </View>
-              <View style={styles.navigationChip}>
-                <MCIcon name="clock-outline" size={16} color={THEME.accent} />
-                <Text style={styles.navigationChipLabel}>ETA</Text>
-                <Text style={styles.navigationChipValue}>
-                  {etaToPickupMin === null ? '—' : `${Math.round(etaToPickupMin)} min`}
-                </Text>
-              </View>
-            </View>
+            <TouchableOpacity
+              style={styles.mapExpandButton}
+              activeOpacity={0.8}
+              onPress={() => setShowMapModal(true)}
+            >
+              <MCIcon name="fullscreen" size={16} color="#fff" />
+              <Text style={styles.mapExpandText}>View Full Map</Text>
+            </TouchableOpacity>
 
             <JobOfferMap
               pickup={pickupCoordinate}
               driver={driverCoordinate}
-              height={220}
+              height={MAP_HEIGHT}
               showNavigationButtons
               showAlternateRoute
               onRouteStats={(stats) => setRouteStats(stats)}
               onExpandMap={() => setShowMapModal(true)}
             />
+
+            {/* Action Buttons Under Map - Inline */}
+            <View style={styles.inlineActionsContainer}>
+              {renderActionButtons(
+                status,
+                handleProceedToPickup,
+                handleArrive,
+                handleStartRide,
+                handleComplete,
+                handleNoShow,
+                handleRecall,
+                handleCancel
+              )}
+            </View>
           </View>
         )}
-
-        {/* Rider Info */}
-        <View style={styles.riderCard}>
-          <Text style={styles.sectionTitle}>RIDER</Text>
-          <View style={styles.riderRow}>
-            <MCIcon name="account" size={18} color="#fbbf24" />
-            <Text style={styles.riderText}>{riderName}</Text>
-          </View>
-          <View style={styles.riderRow}>
-            <MCIcon name="phone" size={18} color="#34d399" />
-            <Text style={styles.riderText}>{riderPhone}</Text>
-          </View>
-          <View style={styles.riderRow}>
-            <MCIcon name="car" size={18} color="#60a5fa" />
-            <Text style={styles.riderText}>{vehicleLabel}</Text>
-          </View>
-        </View>
 
         {!isPrePickupPhase && (
           <View style={styles.mapContainer}>
@@ -569,26 +497,27 @@ const EnhancedJobTrackingScreen: React.FC = () => {
               pickup={pickupCoordinate}
               dropoff={showDropoffOnMap ? dropoffCoordinate : undefined}
               driver={driverCoordinate}
+              stops={currentJob?.stops}
               route={routeCoordinates}
               style={styles.map}
-              height={250}
+              height={MAP_HEIGHT}
             />
+            
+            {/* Action Buttons Under Map - Inline */}
+            <View style={styles.inlineActionsContainer}>
+              {renderActionButtons(
+                status,
+                handleProceedToPickup,
+                handleArrive,
+                handleStartRide,
+                handleComplete,
+                handleNoShow,
+                handleRecall,
+                handleCancel
+              )}
+            </View>
           </View>
         )}
-
-        {/* Action Buttons */}
-        <View style={styles.actionsContainer}>
-          {renderActionButtons(
-            status,
-            handleProceedToPickup,
-            handleArrive,
-            handleStartRide,
-            handleComplete,
-            handleNoShow,
-            handleRecall,
-            handleCancel
-          )}
-        </View>
       </ScrollView>
 
       <Modal
@@ -608,7 +537,7 @@ const EnhancedJobTrackingScreen: React.FC = () => {
             <JobOfferMap
               pickup={pickupCoordinate}
               driver={driverCoordinate}
-              height={Math.max(320, width)}
+              height={height * 0.75}
               showNavigationButtons
               showAlternateRoute
               onRouteStats={(stats) => setRouteStats(stats)}
@@ -626,12 +555,12 @@ const getStatusLabel = (status: JobStatus): string => {
     case 'ACCEPTED':
       return 'Job Accepted';
     case 'ON_THE_WAY':
-      return 'On the Way to Pickup';
+      return 'Proceeding to Pickup';
     case 'ARRIVED':
       return 'Arrived at Pickup';
     case 'STARTED':
     case 'ACTIVE':
-      return 'Ride Started - Safe Travels!';
+      return 'Ride in Progress';
     case 'REACHED':
       return 'Reached Destination';
     default:
@@ -671,7 +600,7 @@ const getStatusPillStyle = (status: JobStatus) => {
     case 'ACTIVE':
       return { backgroundColor: THEME.accent };
     case 'REACHED':
-      return { backgroundColor: '#a855f7' };
+      return { backgroundColor: '#8B5CF6' }; // Violet
     default:
       return { backgroundColor: '#64748b' };
   }
@@ -692,13 +621,13 @@ const renderActionButtons = (
     case 'ACCEPTED':
       return (
         <>
-          <TouchableOpacity style={[styles.primaryButton, styles.buttonBlue]} onPress={onProceedToPickup}>
-            <MCIcon name="navigation-variant" size={20} color="#fff" />
-            <Text style={styles.primaryButtonText}>Proceed to Pickup</Text>
+          <TouchableOpacity style={[styles.inlineButton, styles.buttonBlue, { flex: 2 }]} onPress={onProceedToPickup}>
+            <MCIcon name="navigation-variant" size={18} color="#fff" />
+            <Text style={styles.inlineButtonText}>Proceed to Pickup</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={[styles.secondaryButton, styles.buttonGray]} onPress={onRecall}>
-            <MCIcon name="arrow-u-left-top" size={18} color="#fff" />
-            <Text style={styles.secondaryButtonText}>Recall</Text>
+          <TouchableOpacity style={[styles.inlineButton, styles.buttonGray, { flex: 1 }]} onPress={onRecall}>
+            <MCIcon name="arrow-u-left-top" size={16} color="#fff" />
+            <Text style={styles.inlineButtonText}>Recall</Text>
           </TouchableOpacity>
         </>
       );
@@ -706,13 +635,13 @@ const renderActionButtons = (
     case 'ON_THE_WAY':
       return (
         <>
-          <TouchableOpacity style={[styles.primaryButton, styles.buttonCyan]} onPress={onArrive}>
-            <MCIcon name="map-marker-check" size={20} color="#fff" />
-            <Text style={styles.primaryButtonText}>I've Arrived</Text>
+          <TouchableOpacity style={[styles.inlineButton, styles.buttonCyan, { flex: 2 }]} onPress={onArrive}>
+            <MCIcon name="map-marker-check" size={18} color="#fff" />
+            <Text style={styles.inlineButtonText}>I've Arrived</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={[styles.secondaryButton, styles.buttonGray]} onPress={onRecall}>
-            <MCIcon name="arrow-u-left-top" size={18} color="#fff" />
-            <Text style={styles.secondaryButtonText}>Recall</Text>
+          <TouchableOpacity style={[styles.inlineButton, styles.buttonGray, { flex: 1 }]} onPress={onRecall}>
+            <MCIcon name="arrow-u-left-top" size={16} color="#fff" />
+            <Text style={styles.inlineButtonText}>Recall</Text>
           </TouchableOpacity>
         </>
       );
@@ -720,20 +649,18 @@ const renderActionButtons = (
     case 'ARRIVED':
       return (
         <>
-          <TouchableOpacity style={[styles.primaryButton, styles.buttonGreen]} onPress={onStartRide}>
-            <MCIcon name="play-circle" size={20} color="#fff" />
-            <Text style={styles.primaryButtonText}>Start Ride</Text>
+          <TouchableOpacity style={[styles.inlineButton, styles.buttonGreen, { flex: 2 }]} onPress={onStartRide}>
+            <MCIcon name="play-circle" size={18} color="#fff" />
+            <Text style={styles.inlineButtonText}>Start Ride</Text>
           </TouchableOpacity>
-          <View style={styles.secondaryButtonRow}>
-            <TouchableOpacity style={[styles.secondaryButton, styles.buttonOrange, { flex: 1 }]} onPress={onNoShow}>
-              <MCIcon name="account-cancel" size={18} color="#fff" />
-              <Text style={styles.secondaryButtonText}>No Show</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={[styles.secondaryButton, styles.buttonGray, { flex: 1 }]} onPress={onRecall}>
-              <MCIcon name="arrow-u-left-top" size={18} color="#fff" />
-              <Text style={styles.secondaryButtonText}>Recall</Text>
-            </TouchableOpacity>
-          </View>
+          <TouchableOpacity style={[styles.inlineButton, styles.buttonOrange, { flex: 1 }]} onPress={onNoShow}>
+            <MCIcon name="account-cancel" size={16} color="#fff" />
+            <Text style={styles.inlineButtonText}>No Show</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={[styles.inlineButton, styles.buttonGray, { flex: 1 }]} onPress={onRecall}>
+            <MCIcon name="arrow-u-left-top" size={16} color="#fff" />
+            <Text style={styles.inlineButtonText}>Recall</Text>
+          </TouchableOpacity>
         </>
       );
 
@@ -742,13 +669,13 @@ const renderActionButtons = (
     case 'REACHED':
       return (
         <>
-          <TouchableOpacity style={[styles.primaryButton, styles.buttonGreen]} onPress={onComplete}>
-            <MCIcon name="check-circle" size={20} color="#fff" />
-            <Text style={styles.primaryButtonText}>Complete Trip</Text>
+          <TouchableOpacity style={[styles.inlineButton, styles.buttonGreen, { flex: 2 }]} onPress={onComplete}>
+            <MCIcon name="check-circle" size={18} color="#fff" />
+            <Text style={styles.inlineButtonText}>Complete Trip</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={[styles.secondaryButton, styles.buttonRed]} onPress={onCancel}>
-            <MCIcon name="close-circle" size={18} color="#fff" />
-            <Text style={styles.secondaryButtonText}>Cancel Trip</Text>
+          <TouchableOpacity style={[styles.inlineButton, styles.buttonRed, { flex: 1 }]} onPress={onCancel}>
+            <MCIcon name="close-circle" size={16} color="#fff" />
+            <Text style={styles.inlineButtonText}>Cancel</Text>
           </TouchableOpacity>
         </>
       );
@@ -768,82 +695,52 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   contentContainer: {
-    padding: 20,
-    paddingBottom: 48,
-  },
-  heroCard: {
-    backgroundColor: THEME.surface,
-    borderRadius: 18,
-    padding: 20,
-    marginBottom: 18,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    borderWidth: 1,
-    borderColor: THEME.border,
-  },
-  heroTextBlock: {
-    flex: 1,
-    paddingRight: 12,
-  },
-  heroLabel: {
-    color: THEME.muted,
-    fontSize: 12,
-    letterSpacing: 1,
-    marginBottom: 6,
-    textTransform: 'uppercase',
-  },
-  heroJob: {
-    color: THEME.text,
-    fontSize: 24,
-    fontWeight: '700',
-    marginBottom: 6,
-  },
-  heroMeta: {
-    color: THEME.muted,
-    fontSize: 14,
+    padding: 16,
+    paddingBottom: 32,
   },
   statusChip: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
+    gap: 4,
     borderRadius: 999,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    marginBottom: 12,
+    alignSelf: 'flex-start',
   },
   statusChipText: {
     color: '#fff',
-    fontWeight: '700',
-    fontSize: 13,
+    fontWeight: '600',
+    fontSize: 11,
   },
   quickStatsRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    gap: 12,
-    marginBottom: 18,
+    gap: 8,
+    marginBottom: 12,
   },
   quickStat: {
     flex: 1,
     backgroundColor: THEME.mutedSurface,
-    borderRadius: 14,
-    paddingVertical: 14,
-    paddingHorizontal: 12,
+    borderRadius: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 8,
     borderWidth: 1,
     borderColor: THEME.border,
     alignItems: 'flex-start',
-    gap: 6,
+    gap: 4,
   },
   quickStatLabel: {
     color: THEME.muted,
-    fontSize: 11,
+    fontSize: 9,
     letterSpacing: 0.5,
-    marginTop: 6,
+    marginTop: 2,
   },
   quickStatValue: {
     color: THEME.text,
-    fontSize: 18,
+    fontSize: 15,
     fontWeight: '600',
-    marginTop: 4,
+    marginTop: 2,
   },
   handoffCard: {
     flex: 1,
@@ -1026,8 +923,8 @@ const styles = StyleSheet.create({
   tripCard: {
     backgroundColor: THEME.surface,
     borderRadius: 12,
-    padding: 16,
-    marginBottom: 16,
+    padding: 12,
+    marginBottom: 12,
     borderWidth: 1,
     borderColor: THEME.border,
   },
@@ -1041,21 +938,58 @@ const styles = StyleSheet.create({
   tripRow: {
     flexDirection: 'row',
     alignItems: 'flex-start',
-    gap: 12,
-    marginBottom: 12,
+    gap: 10,
+    marginBottom: 8,
   },
   tripInfo: {
     flex: 1,
   },
   tripLabel: {
-    fontSize: 11,
+    fontSize: 9,
     fontWeight: '600',
     color: '#94a3b8',
-    marginBottom: 4,
+    marginBottom: 2,
   },
   tripValue: {
-    fontSize: 14,
+    fontSize: 13,
     color: '#f8fafc',
+  },
+  phoneButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: THEME.success,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 8,
+    marginTop: 8,
+    gap: 8,
+  },
+  phoneButtonText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#fff',
+  },
+  phoneButtonDisabled: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#1e293b',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 8,
+    marginTop: 8,
+    gap: 8,
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  phoneButtonDisabledText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#64748b',
+  },
+  divider: {
+    height: 1,
+    backgroundColor: THEME.border,
+    marginVertical: 8,
   },
   tripMeta: {
     flexDirection: 'row',
@@ -1071,32 +1005,14 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#cbd5e1',
   },
-  riderCard: {
-    backgroundColor: THEME.surface,
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 16,
-    borderWidth: 1,
-    borderColor: THEME.border,
-  },
-  riderRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    marginBottom: 10,
-  },
-  riderText: {
-    fontSize: 14,
-    color: '#f8fafc',
-  },
   navigationCard: {
     backgroundColor: THEME.surface,
-    borderRadius: 18,
-    padding: 16,
-    marginBottom: 16,
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 12,
     borderWidth: 1,
     borderColor: THEME.border,
-    gap: 12,
+    gap: 10,
   },
   navigationHeader: {
     flexDirection: 'row',
@@ -1157,12 +1073,31 @@ const styles = StyleSheet.create({
   mapContainer: {
     borderRadius: 12,
     overflow: 'hidden',
-    marginBottom: 16,
+    marginBottom: 12,
     borderWidth: 1,
     borderColor: THEME.border,
   },
   map: {
     borderRadius: 12,
+  },
+  inlineActionsContainer: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 10,
+  },
+  inlineButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 12,
+    paddingHorizontal: 8,
+    borderRadius: 10,
+  },
+  inlineButtonText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#ffffff',
   },
   mapModalBackdrop: {
     flex: 1,
@@ -1187,39 +1122,6 @@ const styles = StyleSheet.create({
     color: THEME.text,
     fontSize: 16,
     fontWeight: '700',
-  },
-  actionsContainer: {
-    gap: 12,
-  },
-  primaryButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 10,
-    paddingVertical: 16,
-    borderRadius: 12,
-  },
-  primaryButtonText: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#ffffff',
-  },
-  secondaryButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    paddingVertical: 12,
-    borderRadius: 10,
-  },
-  secondaryButtonRow: {
-    flexDirection: 'row',
-    gap: 12,
-  },
-  secondaryButtonText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#ffffff',
   },
   buttonGreen: { backgroundColor: '#16a34a' },
   buttonBlue: { backgroundColor: '#3b82f6' },

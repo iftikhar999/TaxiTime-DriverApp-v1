@@ -7,15 +7,39 @@
 
 import { Platform } from 'react-native';
 
-// ⚠️ IMPORTANT: Replace with your actual Stripe publishable keys
-// Get these from: https://dashboard.stripe.com/apikeys
+// ⚠️ Stripe publishable key is read from react-native-config at build time.
+// Set STRIPE_PUBLISHABLE_KEY in .env (see .env.example). In DEV we fall back
+// to a warning + empty string so the app boots; in PROD we throw at init.
+
+let envStripeKey: string | undefined;
+try {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const Config = require('react-native-config').default ?? require('react-native-config');
+  envStripeKey = Config?.STRIPE_PUBLISHABLE_KEY;
+} catch {
+  envStripeKey = undefined;
+}
+
+const resolveStripeKey = (): string => {
+  const trimmed = typeof envStripeKey === 'string' ? envStripeKey.trim() : '';
+  if (trimmed.length > 0) {
+    return trimmed;
+  }
+  if (__DEV__) {
+    console.warn(
+      '[stripe] STRIPE_PUBLISHABLE_KEY not set — payments will be disabled. ' +
+        'Add it to .env and rebuild.'
+    );
+    return '';
+  }
+  throw new Error(
+    '[stripe] STRIPE_PUBLISHABLE_KEY is required in production builds.'
+  );
+};
 
 export const STRIPE_CONFIG = {
-  // Test mode publishable key (starts with pk_test_)
-  publishableKey: process.env.STRIPE_PUBLISHABLE_KEY || 'pk_test_YOUR_KEY_HERE',
-  
-  // Production publishable key (starts with pk_live_)
-  // publishableKey: process.env.STRIPE_PUBLISHABLE_KEY || 'pk_live_YOUR_KEY_HERE',
+  // Publishable key (pk_test_* in dev, pk_live_* in prod) loaded from .env
+  publishableKey: resolveStripeKey(),
   
   // Merchant identifier for Apple Pay (iOS only)
   merchantIdentifier: 'merchant.com.abtaxi.driver',

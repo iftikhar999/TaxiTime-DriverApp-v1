@@ -11,6 +11,7 @@ import MapView, {
 } from "react-native-maps";
 import MaterialCommunityIcons from "react-native-vector-icons/MaterialCommunityIcons";
 import { useAuth } from "../context/AuthContext";
+import { fetchOsrmRoute } from "../services/osrmRoutingService";
 import { fetchCompanySettings, MapProvider } from "../services/companySettingsService";
 import { Colors } from "../theme/colors";
 
@@ -21,10 +22,18 @@ type CoordinateInput = {
   speed?: number | null;    // ✨ NEW: Driver speed for dynamic pitch
 };
 
+interface StopPoint {
+  address?: string;
+  latitude?: number;
+  longitude?: number;
+  order?: number;
+}
+
 interface RideMapProps {
   pickup?: CoordinateInput;
   dropoff?: CoordinateInput;
   driver?: CoordinateInput;
+  stops?: StopPoint[]; // Intermediate stops
   style?: ViewStyle;
   height?: number;
   route?: Array<{ latitude: number; longitude: number }>;
@@ -86,6 +95,7 @@ const RideMap: React.FC<RideMapProps> = ({
   pickup, 
   dropoff, 
   driver, 
+  stops = [],
   route, 
   style, 
   height = 220,
@@ -141,6 +151,49 @@ const RideMap: React.FC<RideMapProps> = ({
     };
   }, [user?.companyId, mapProviderOverride]);
 
+  const validStops = useMemo(() => {
+    return (stops || []).filter(
+      (s) => s.latitude && s.longitude && Number.isFinite(s.latitude) && Number.isFinite(s.longitude)
+    );
+  }, [stops]);
+
+  // Road-following route from OSRM (free OpenStreetMap routing). Keyed on
+  // coarse coordinates so we don't refetch on every tiny GPS wiggle.
+  const [osrmPath, setOsrmPath] = useState<Array<{ latitude: number; longitude: number }> | null>(null);
+  const routeKey = useMemo(() => {
+    if (!hasValidCoordinate(driver) || !hasValidCoordinate(dropoff)) return null;
+    const round = (n: number) => Math.round(n * 1000) / 1000; // ~110m grid
+    const parts = [
+      `${round(driver.latitude)},${round(driver.longitude)}`,
+      ...validStops.map((s) => `${round(s.latitude!)},${round(s.longitude!)}`),
+      `${round(dropoff.latitude)},${round(dropoff.longitude)}`,
+    ];
+    return parts.join("|");
+  }, [driver, dropoff, validStops]);
+
+  useEffect(() => {
+    if (!routeKey || !hasValidCoordinate(driver) || !hasValidCoordinate(dropoff)) {
+      setOsrmPath(null);
+      return;
+    }
+    const controller = new AbortController();
+    const waypoints = [
+      { latitude: driver.latitude!, longitude: driver.longitude! },
+      ...validStops.map((s) => ({ latitude: s.latitude!, longitude: s.longitude! })),
+      { latitude: dropoff.latitude!, longitude: dropoff.longitude! },
+    ];
+    fetchOsrmRoute(waypoints, { signal: controller.signal })
+      .then((r) => {
+        if (r) setOsrmPath(r.coordinates);
+      })
+      .catch((err) => {
+        if ((err as Error).name !== "AbortError") {
+          console.warn("OSRM route fetch failed:", err);
+        }
+      });
+    return () => controller.abort();
+  }, [routeKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const points = useMemo(() => {
     const coords: Array<{ latitude: number; longitude: number }> = [];
     if (hasValidCoordinate(pickup)) {
@@ -152,6 +205,10 @@ const RideMap: React.FC<RideMapProps> = ({
     if (hasValidCoordinate(driver)) {
       coords.push({ latitude: driver.latitude, longitude: driver.longitude });
     }
+    // Include stops in region calculation
+    validStops.forEach((s) => {
+      coords.push({ latitude: s.latitude!, longitude: s.longitude! });
+    });
     if (Array.isArray(route)) {
       route.forEach((point) => {
         if (
@@ -163,7 +220,7 @@ const RideMap: React.FC<RideMapProps> = ({
       });
     }
     return coords;
-  }, [pickup, dropoff, driver, route]);
+  }, [pickup, dropoff, driver, route, validStops]);
 
   const region = useMemo(() => buildRegion(points), [points]);
 
@@ -312,17 +369,9 @@ const RideMap: React.FC<RideMapProps> = ({
           scrollEnabled={false}
           mapType="standard" // ✨ Better for 3D view
         >
-          {hasValidCoordinate(pickup) && (
-            <Marker
-              coordinate={{ latitude: pickup.latitude!, longitude: pickup.longitude! }}
-              title="Pickup"
-              pinColor="#22c55e"
-            >
-              <View style={styles.pickupMarker}>
-                <MaterialCommunityIcons name="map-marker" size={28} color="#22c55e" />
-              </View>
-            </Marker>
-          )}
+          {/* Pickup marker removed - customer already picked up */}
+          
+          {/* Dropoff Marker */}
           {hasValidCoordinate(dropoff) && (
             <Marker
               coordinate={{ latitude: dropoff.latitude!, longitude: dropoff.longitude! }}
@@ -334,6 +383,20 @@ const RideMap: React.FC<RideMapProps> = ({
               </View>
             </Marker>
           )}
+
+          {/* Intermediate Stop Markers - Amber with number */}
+          {validStops.map((stop, index) => (
+            <Marker
+              key={`stop-${index}`}
+              coordinate={{ latitude: stop.latitude!, longitude: stop.longitude! }}
+              title={`Stop ${stop.order || index + 1}`}
+              description={stop.address || ''}
+            >
+              <View style={styles.stopMarker}>
+                <Text style={styles.stopMarkerText}>{stop.order || index + 1}</Text>
+              </View>
+            </Marker>
+          ))}
           {driverAnimatedPositionRef.current && hasValidCoordinate(driver) && (
             <Marker.Animated
               coordinate={driverAnimatedPositionRef.current}
@@ -356,11 +419,37 @@ const RideMap: React.FC<RideMapProps> = ({
               </View>
             </Marker.Animated>
           )}
-          {Array.isArray(route) && route.length >= 2 && (
+          
+          {/* Road-following route via free OSRM (OpenStreetMap). Rendered as
+              two stacked polylines for the Uber-style stroked look: darker
+              outer border underneath, bright blue fill on top. */}
+          {osrmPath && osrmPath.length >= 2 && (
+            <>
+              <Polyline
+                coordinates={osrmPath}
+                strokeColor="#1e3a8a"
+                strokeWidth={9}
+                lineCap="round"
+                lineJoin="round"
+                zIndex={1}
+              />
+              <Polyline
+                coordinates={osrmPath}
+                strokeColor="#3b82f6"
+                strokeWidth={6}
+                lineCap="round"
+                lineJoin="round"
+                zIndex={2}
+              />
+            </>
+          )}
+          
+          {/* Fallback: Show recorded route if no dropoff */}
+          {Array.isArray(route) && route.length >= 2 && !hasValidCoordinate(dropoff) && (
             <Polyline
               coordinates={route}
               strokeColor="#38bdf8"
-              strokeWidth={enable3D ? 5 : 4} // ✨ Thicker line for 3D
+              strokeWidth={enable3D ? 5 : 4}
               lineCap="round"
               lineJoin="round"
             />
@@ -420,6 +509,26 @@ const styles = StyleSheet.create({
     // ✨ NEW: Dropoff marker styling
     alignItems: "center",
     justifyContent: "center",
+  },
+  stopMarker: {
+    backgroundColor: "#f59e0b",
+    borderRadius: 14,
+    width: 28,
+    height: 28,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 2,
+    borderColor: "#fff",
+    shadowColor: "#000",
+    shadowOpacity: 0.25,
+    shadowOffset: { width: 0, height: 2 },
+    shadowRadius: 3,
+    elevation: 5,
+  },
+  stopMarkerText: {
+    color: "#fff",
+    fontSize: 13,
+    fontWeight: "700",
   },
   placeholder: {
     alignItems: "center",

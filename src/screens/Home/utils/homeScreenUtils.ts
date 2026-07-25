@@ -1,12 +1,8 @@
 /**
- * Format currency amount with proper symbol and decimals
+ * Format currency amount — delegates to the app-wide currency formatter so
+ * Home + all its cards use the same currency as the rest of the app.
  */
-export const formatCurrency = (amount: number | undefined | null): string => {
-  if (amount === undefined || amount === null || !Number.isFinite(amount)) {
-    return "$0.00";
-  }
-  return `$${amount.toFixed(2)}`;
-};
+export { formatCurrency } from "../../../config/currency";
 
 /**
  * Format duration in seconds to human-readable format

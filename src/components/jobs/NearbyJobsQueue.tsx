@@ -110,24 +110,15 @@ const NearbyJobsQueue: React.FC<NearbyJobsQueueProps> = ({ compactMode = false }
                 </Text>
               </View>
               <View style={styles.queuedJobDetails}>
-                <Text style={styles.queuedPickup} numberOfLines={1}>
+                <Text style={styles.queuedPickup} numberOfLines={2}>
                   <Icon name="map-marker" size={12} color="#22c55e" />{' '}
                   {queuedJob.pickupAddress || 'Pickup location'}
                 </Text>
-                <Text style={styles.queuedDropoff} numberOfLines={1}>
-                  <Icon name="flag-checkered" size={10} color="#888" />{' '}
-                  {queuedJob.dropoffAddress || 'Destination'}
-                </Text>
+                {/* Dropoff intentionally hidden — drivers see the destination
+                    only AFTER claiming the job. Prevents cherry-picking
+                    by trip length. */}
               </View>
             </View>
-            {queuedJob.estimatedFare && (
-              <View style={styles.queuedJobRight}>
-                <Text style={styles.queuedFare}>
-                  ${Number(queuedJob.estimatedFare).toFixed(0)}
-                </Text>
-                <Text style={styles.queuedAutoStart}>AUTO START</Text>
-              </View>
-            )}
           </View>
           <Text style={styles.queuedHint}>
             This job will automatically start after completing your current trip
@@ -167,20 +158,15 @@ const NearbyJobsQueue: React.FC<NearbyJobsQueueProps> = ({ compactMode = false }
                   </Text>
                 </View>
                 <View style={styles.nearbyJobDetails}>
-                  <Text style={styles.nearbyPickup} numberOfLines={1}>
+                  <Text style={styles.nearbyPickup} numberOfLines={2}>
                     {job.pickupAddress || 'Pickup location'}
                   </Text>
-                  <Text style={styles.nearbyDropoff} numberOfLines={1}>
-                    → {job.dropoffAddress || 'Destination'}
-                  </Text>
+                  {/* Dropoff intentionally hidden on the list view. Driver
+                      gets the destination only after accepting the job —
+                      stops them from skipping short or long rides. */}
                 </View>
               </View>
               <View style={styles.nearbyJobRight}>
-                {job.estimatedFare && (
-                  <Text style={styles.nearbyFare}>
-                    ${Number(job.estimatedFare).toFixed(0)}
-                  </Text>
-                )}
                 {canQueueJob ? (
                   <TouchableOpacity
                     style={styles.queueButton}

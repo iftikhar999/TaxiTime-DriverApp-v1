@@ -97,11 +97,7 @@ const JobAcceptanceModal: React.FC<JobAcceptanceModalProps> = ({
     Math.max(0, initialSeconds > 0 ? (timeLeft / initialSeconds) * 100 : 0)
   );
   const isOfferExpired = timeLeft <= 0;
-  const customerName = job.passenger?.name || "Unknown Customer";
-  const customerPhone = job.passenger?.phone || "";
   const pickupAddress = job.pickupAddress || "Unknown pickup location";
-  const dropoffAddress = job.dropoffAddress || "Unknown destination";
-  const estimatedPrice = job.estimatedFare || job.fare || 0;
   const distance = job.distance || 0;
 
   return (
@@ -129,49 +125,19 @@ const JobAcceptanceModal: React.FC<JobAcceptanceModalProps> = ({
             <View style={[styles.progressFill, { width: `${progress}%` }]} />
           </View>
 
-          {/* Customer Info */}
-          <View style={styles.section}>
-            <View style={styles.customerHeader}>
-              <Icon name="user" size={20} color="#666" />
-              <View style={styles.customerInfo}>
-                <Text style={styles.customerName}>{customerName}</Text>
-                {customerPhone ? (
-                  <Text style={styles.customerPhone}>{customerPhone}</Text>
-                ) : null}
-              </View>
-            </View>
-          </View>
-
-          {/* Trip Details */}
+          {/* Trip Details - Pickup only (dropoff revealed after accept) */}
           <View style={styles.section}>
             <View style={styles.tripDetail}>
               <View style={styles.locationDot} />
               <View style={styles.locationInfo}>
-                <Text style={styles.locationLabel}>PICKUP</Text>
+                <Text style={styles.locationLabel}>PICKUP LOCATION</Text>
                 <Text style={styles.locationAddress}>{pickupAddress}</Text>
-              </View>
-            </View>
-
-            <View style={styles.routeLine} />
-
-            <View style={styles.tripDetail}>
-              <View style={[styles.locationDot, styles.destinationDot]} />
-              <View style={styles.locationInfo}>
-                <Text style={styles.locationLabel}>DESTINATION</Text>
-                <Text style={styles.locationAddress}>{dropoffAddress}</Text>
               </View>
             </View>
           </View>
 
-          {/* Trip Metrics */}
+          {/* Trip Metrics - Distance only (fare hidden before accept) */}
           <View style={styles.metricsContainer}>
-            <View style={styles.metric}>
-              <Text style={styles.metricValue}>
-                ${estimatedPrice.toFixed(2)}
-              </Text>
-              <Text style={styles.metricLabel}>Estimated Fare</Text>
-            </View>
-            <View style={styles.metricSeparator} />
             <View style={styles.metric}>
               <Text style={styles.metricValue}>{distance.toFixed(1)}km</Text>
               <Text style={styles.metricLabel}>Distance</Text>

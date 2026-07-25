@@ -1,4 +1,5 @@
 import { v2Client, v1Client, withFallback, offlineQueue } from "./apiClient";
+import httpClient from "../httpClient";
 
 export type StopStatus =
   | "PENDING"
@@ -9,16 +10,18 @@ export type StopStatus =
   | "SKIPPED";
 
 export const getActiveJob = async () => {
-  return withFallback(
-    async () => {
-      const res = await v2Client.get("/driver/active-job");
-      return res.data;
-    },
-    async () => {
-      const res = await v1Client.get("/driver/active-job");
-      return res.data;
-    }
-  );
+  // Authoritative "what job am I on?" lookup. Used on app foreground resume
+  // so drivers returning from Google Maps / backgrounded state re-sync with
+  // server truth before continuing the meter. Returns { job } or { job: null }
+  // when the driver has no active job.
+  try {
+    const res = await httpClient.get('/mobile/driver/jobs/current');
+    return res.data?.job ?? null;
+  } catch (err: any) {
+    if (err?.response?.status === 404) return null;
+    console.warn('[jobService.getActiveJob] failed', err?.message);
+    return null;
+  }
 };
 
 export const getJobStops = async (jobId: string) => {

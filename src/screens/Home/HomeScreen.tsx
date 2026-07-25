@@ -1,7 +1,11 @@
 import { useFocusEffect, useNavigation } from "@react-navigation/native";
 import { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, Alert, Animated, Modal, PanResponder, Platform, Pressable, RefreshControl, SafeAreaView, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { ActivityIndicator, Alert, Animated, Modal, PanResponder, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+// Use SafeAreaView from react-native-safe-area-context — the legacy
+// react-native one has known issues on Android (bottom gesture nav,
+// edge-to-edge) and ignores the configured insets provider.
+import { SafeAreaView } from "react-native-safe-area-context";
 import KeepAwake from "react-native-keep-awake";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Toast from "react-native-toast-message";
@@ -31,15 +35,22 @@ import { getWaitingRatePerMinute } from "../../utils/tariffUtils";
 import {
     DashboardHeader,
     DashboardMetric,
+    EarningsGoalCard,
+    GreetingBanner,
     JobStatusCards,
     LocationMap,
-    RecentJobsSection,
+    OutOfZoneBanner,
+    QuickActionsBar,
+    // OverlayPermissionBanner is added separately below — Home/components
+    // re-exports require a barrel update; we import directly to avoid that.
+    // RecentJobsSection — moved to JobHistoryScreen
     StatusModal,
     TariffCard,
     UpcomingJobsSection,
     WalkInDropoffPicker,
     type WalkInDropoffSelection
 } from "./components";
+import OverlayPermissionBanner from "./components/OverlayPermissionBanner";
 import { formatCurrency, formatDuration, formatShiftDuration, normalizeMapProvider } from "./utils/homeScreenUtils";
 
 type DriverAvailability = "AVAILABLE" | "AWAY" | "BUSY";
@@ -77,7 +88,7 @@ const HomeScreen: React.FC = () => {
   } = useShift();
   const { status: jobStatus, currentJob, startWalkInJob, timer, pricingBreakdown, setIncomingJob } = useJob();
   const { location } = useLocation();
-  const { currentZone, loading: zoneLoading, error: zoneError, forceRefresh: retryZoneDetection } = useZone();
+  const { currentZone, loading: zoneLoading, error: zoneError, forceRefresh: retryZoneDetection, isOutOfZone, lastKnownZoneName, dismissOutOfZone } = useZone();
   const latestLocationRef = useRef(location);
   const lastUpcomingRefreshRef = useRef(0);
   const tariffRepairInFlight = useRef(false);
@@ -94,11 +105,19 @@ const HomeScreen: React.FC = () => {
   const [manualStatus, setManualStatus] = useState<Exclude<DriverAvailability, "BUSY">>("AVAILABLE");
   const [statusModalVisible, setStatusModalVisible] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  const [todayStats] = useState({ jobs: 0, earnings: 0 });
+  const [mapExpanded, setMapExpanded] = useState(false);
   const [upcomingJobs, setUpcomingJobs] = useState<UpcomingJobSummary[]>([]);
   const [upcomingJobsLoading, setUpcomingJobsLoading] = useState(false);
   const [upcomingJobsError, setUpcomingJobsError] = useState<string | null>(null);
   const [claimingJobId, setClaimingJobId] = useState<string | null>(null);
+
+  // Eligibility self-diagnostic — drives the badge that tells the driver
+  // why (or why not) they'd receive a job offer right now.
+  // Refreshed on mount + every 45s while home is visible.
+  const [eligibility, setEligibility] = useState<{
+    verdict: 'ACCEPTING' | 'PARTIAL' | 'OFF_SHIFT' | 'INELIGIBLE' | 'LOADING';
+    reasons: string[];
+  }>({ verdict: 'LOADING', reasons: [] });
   const [walkInConfirmVisible, setWalkInConfirmVisible] = useState(false);
   const [walkInSliderResetKey, setWalkInSliderResetKey] = useState(0);
   const [creatingWalkInJob, setCreatingWalkInJob] = useState(false);
@@ -106,6 +125,7 @@ const HomeScreen: React.FC = () => {
   const [lastWalkInDropoff, setLastWalkInDropoff] = useState<WalkInDropoffSelection | null>(null);
   const [walkInDropoffPickerVisible, setWalkInDropoffPickerVisible] = useState(false);
   const [awayReminderVisible, setAwayReminderVisible] = useState(false);
+  const [tariffPickerVisible, setTariffPickerVisible] = useState(false);
 
   const resetWalkInSlider = useCallback(
     (options?: { preserveDropoff?: boolean }) => {
@@ -196,8 +216,14 @@ const HomeScreen: React.FC = () => {
     [jobStatus]
   );
   const driverStatus: DriverAvailability = useMemo(
-    () => (isBusy ? "BUSY" : manualStatus),
-    [isBusy, manualStatus]
+    () => {
+      // ✅ Only show AVAILABLE/AWAY/BUSY status when there's an active shift
+      if (!activeShift?.id) {
+        return "AWAY"; // Will display as "Offline" when no shift
+      }
+      return isBusy ? "BUSY" : manualStatus;
+    },
+    [isBusy, manualStatus, activeShift?.id]
   );
 
   const shouldShowUpcomingJobs = useMemo(
@@ -363,7 +389,17 @@ const HomeScreen: React.FC = () => {
       });
       setUpcomingJobs(decorateUpcomingJobs(jobs));
     } catch (error: any) {
-      console.error("Failed to load upcoming jobs:", error);
+      const is401 = error?.response?.status === 401;
+      console.error("Failed to load upcoming jobs:", {
+        status: error?.response?.status,
+        message: error?.response?.data?.message || error?.message,
+        isAuth: is401,
+      });
+      
+      if (is401) {
+        console.warn("⚠️ 401 Unauthorized - Driver may need to login or token expired");
+      }
+      
       setUpcomingJobs([]);
       setUpcomingJobsError(
         error?.response?.data?.message ||
@@ -406,6 +442,34 @@ const HomeScreen: React.FC = () => {
     }, 30000);
     return () => clearInterval(interval);
   }, [shouldShowUpcomingJobs, refreshUpcomingJobs]);
+
+  // Eligibility self-check — drives the home-screen badge. Hits
+  // GET /api/mobile/driver/eligibility once on mount and every 45s.
+  useEffect(() => {
+    let cancelled = false;
+    const fetchEligibility = async () => {
+      try {
+        const resp = await httpClient.get('/mobile/driver/eligibility');
+        if (cancelled) return;
+        const data = resp?.data?.data;
+        if (data && typeof data === 'object') {
+          setEligibility({
+            verdict: data.verdict || (data.eligible ? 'ACCEPTING' : 'PARTIAL'),
+            reasons: Array.isArray(data.reasons) ? data.reasons : [],
+          });
+        }
+      } catch (_err) {
+        // Network blip — keep last known verdict rather than flashing
+        // "LOADING" repeatedly.
+      }
+    };
+    fetchEligibility();
+    const interval = setInterval(fetchEligibility, 45000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, []);
 
   useEffect(() => {
     if (!location) {
@@ -1171,24 +1235,16 @@ const HomeScreen: React.FC = () => {
     }
 
     if (!selectedTariff) {
-      Alert.alert(
-        "Select Tariff",
-        "Choose a tariff before starting a walk-in job.",
-        [
-          {
-            text: "Choose Tariff",
-            onPress: () => {
-              navigation.navigate("TariffSelection", {
-                vehicleId: selectedVehicle?.id || "",
-                mode: "change",
-              });
-            },
-          },
-          { text: "Cancel", style: "cancel" },
-        ]
-      );
-      resetWalkInSlider();
-      return;
+      // Auto-select first tariff if available
+      if (tariffs.length > 0) {
+        const defaultTariff = tariffs.find((t) => t.isDefault) || tariffs[0];
+        selectTariff(defaultTariff).catch(console.warn);
+        // Continue with walk-in - tariff will be set
+      } else {
+        Alert.alert("No Tariff Available", "No tariffs loaded. Pull to refresh.");
+        resetWalkInSlider();
+        return;
+      }
     }
 
     setWalkInConfirmVisible(true);
@@ -1200,12 +1256,12 @@ const HomeScreen: React.FC = () => {
   }, [resetWalkInSlider]);
 
   const handleChangeTariffFromConfirm = useCallback(() => {
-    closeWalkInConfirm();
-    navigation.navigate("TariffSelection", {
-      vehicleId: selectedVehicle?.id || "",
-      mode: selectedVehicle?.id ? "change" : "start",
-    });
-  }, [closeWalkInConfirm, navigation, selectedVehicle?.id]);
+    // Open the same picker modal used elsewhere so the driver can see and
+    // pick from the full tariff list. (The old auto-cycle silently no-op'd
+    // when the driver had only one tariff assigned, which read as "button
+    // broken".)
+    setTariffPickerVisible(true);
+  }, []);
 
   const proceedWithWalkInCreation = useCallback(async (effectiveLocation: typeof location | null) => {
     setCreatingWalkInJob(true);
@@ -1245,13 +1301,17 @@ const HomeScreen: React.FC = () => {
         dropoffLongitude: walkInJob.dropoffLocation?.longitude ?? null,
         estimatedFare: walkInJob.estimatedFare || 0,
         createdAt: walkInJob.createdAt,
+        // Walk-in = guest hail, no registered passenger. Downstream screens
+        // (PaymentCollectionScreen, RatePassenger, completion toast) read
+        // `isWalkIn` to skip customer-only flows like rating and receipt email.
+        isWalkIn: true,
         customer: null,
         passenger: {
           id: null,
-          name: "",
+          name: "Walk-in passenger",
           phone: "",
         },
-      });
+      } as any);
 
       if (walkInDropoff) {
         setLastWalkInDropoff(walkInDropoff);
@@ -1322,8 +1382,14 @@ const HomeScreen: React.FC = () => {
     }
 
     if (!selectedTariff) {
-      Alert.alert("Select Tariff", "Choose a tariff before starting a walk-in job.");
-      return;
+      // Auto-select tariff if available
+      if (tariffs.length > 0) {
+        const defaultTariff = tariffs.find((t: any) => t.isDefault) || tariffs[0];
+        await selectTariff(defaultTariff);
+      } else {
+        Alert.alert("No Tariff Available", "No tariffs loaded. Pull to refresh.");
+        return;
+      }
     }
 
     if (isBusy || currentJob) {
@@ -1421,7 +1487,51 @@ const HomeScreen: React.FC = () => {
     };
   }, [recentJobs]);
 
+  // ✅ Compute real today's stats from recentJobs + shift data
+  const todayStats = useMemo(() => {
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+
+    const todaysJobs = recentJobs.filter((job) => {
+      const completedDate = job.completedAt ? new Date(job.completedAt) : null;
+      return completedDate && completedDate >= todayStart;
+    });
+
+    const todayEarnings = todaysJobs.reduce((sum, job) => {
+      const earnings =
+        job.fare?.driverEarnings ??
+        job.fare?.total ??
+        job.payment?.driverEarnings ??
+        job.payment?.amount ??
+        0;
+      return sum + (typeof earnings === "number" && Number.isFinite(earnings) ? earnings : 0);
+    }, 0);
+
+    return {
+      jobs: todaysJobs.length,
+      earnings: todayEarnings + (shiftSnapshot.totalEarnings || 0),
+    };
+  }, [recentJobs, shiftSnapshot.totalEarnings]);
+
+  // ✅ Driver rating (from auth context or API)
+  const driverRating = useMemo(() => {
+    const rating = (driver as any)?.rating ?? (driver as any)?.averageRating ?? null;
+    if (typeof rating === "number" && Number.isFinite(rating) && rating > 0) {
+      return rating;
+    }
+    return null;
+  }, [driver]);
+
+  const totalRatings = useMemo(() => {
+    return (driver as any)?.totalRatings ?? (driver as any)?.ratingCount ?? 0;
+  }, [driver]);
+
   const drawerStatusMeta = useMemo(() => {
+    // ✅ Show "Offline" when there's no active shift
+    if (!activeShift?.id) {
+      return { label: "Offline", color: "#6b7280" }; // Gray color for offline
+    }
+    
     switch (driverStatus) {
       case "AWAY":
         return { label: "Away", color: "#f97316" };
@@ -1431,41 +1541,75 @@ const HomeScreen: React.FC = () => {
       default:
         return { label: "Online", color: "#4ade80" };
     }
-  }, [driverStatus]);
+  }, [driverStatus, activeShift?.id]);
 
   const drawerMenuItems = useMemo(
     () => [
       {
-        key: "profiles",
-        icon: "account-switch",
-        label: "Driver Profiles",
-        description: "Switch between saved fleet identities and preferences.",
+        // Real-time chat with the company dispatcher. Kept at the top of
+        // the drawer so it's one tap away — dispatcher comms is a frequent
+        // driver action (address clarifications, break requests, etc.).
+        key: "dispatcherChat",
+        icon: "headset",
+        label: "Dispatcher Chat",
+        description: "Message your dispatcher in real time — routing, breaks, issues.",
+        route: "DispatcherChat",
       },
       {
         key: "wallet",
         icon: "wallet",
-        label: "Wallet Management",
-        description: "Track balances, payouts, and transfer requests.",
+        label: "Wallet & Earnings",
+        description: "Cash, card, EPOS totals, balances owed, and payouts.",
+        route: "Wallet",
       },
       {
+        key: "jobHistory",
+        icon: "history",
+        label: "Job History",
+        description: "View all completed, cancelled, and no-show trips.",
+        route: "JobHistory",
+      },
+      {
+        key: "documents",
+        icon: "file-document-outline",
+        label: "Documents",
+        description: "License, insurance, vehicle registration + expiry status.",
+        route: "Documents",
+      },
+      {
+        key: "profile",
+        icon: "account-circle-outline",
+        label: "Profile",
+        description: "Your account info, fleet assignment, and logout.",
+        route: "Profile",
+      },
+      {
+        // "Recent Earnings" = sum of your LAST 5 completed rides (quick glance
+        // at how the last handful of jobs went). Tap-through opens Wallet
+        // where the full period breakdown is shown.
         key: "recentEarnings",
         icon: "chart-line",
         label: "Recent Earnings",
-        description: "Last five completed rides credited to you.",
+        description: "Total from your last 5 completed trips. Tap to open Wallet.",
         value: formatCurrency(financialSnapshot.recentEarnings),
+        route: "Wallet",
       },
       {
+        // "Cash In Hand" = sum of cash payments you've collected that are
+        // still waiting to be reconciled with the company at settlement time.
         key: "cashOnHand",
         icon: "hand-coin-outline",
         label: "Cash In Hand",
-        description: "Cash collections to remit back to the company.",
+        description: "Cash payments you collected that still owe the company.",
         value: formatCurrency(financialSnapshot.cashOnHand),
+        route: "Wallet",
       },
       {
         key: "operations",
         icon: "earth",
         label: "Operating Principles",
-        description: "Guidelines aligned with the platform’s service nature.",
+        description: "Fleet policies — safety, metering, documents, service.",
+        route: "OperatingPrinciples",
       },
     ],
     [financialSnapshot.cashOnHand, financialSnapshot.recentEarnings]
@@ -1535,8 +1679,13 @@ const HomeScreen: React.FC = () => {
   const acceptedJobsCount = hasAcceptedJob ? 1 : 0;
   const onGoingJobsCount = hasOnGoingJob ? 1 : 0;
 
+  // Strict safe area — top inset honours the status bar / notch in
+  // full, bottom inset clears the system gesture / nav bar. The
+  // previous `(insets.top - 12)` was deliberately bleeding 12 px
+  // under the status bar; the SafeAreaView from
+  // react-native-safe-area-context handles all four edges natively.
   return (
-    <SafeAreaView style={[styles.safeArea, { paddingTop: Math.max((insets.top || 0) - 12, 0) }]}>
+    <SafeAreaView edges={['top', 'bottom', 'left', 'right']} style={styles.safeArea}>
       {/* Keep screen awake while driver is on shift */}
       <KeepAwake />
       <View style={styles.container}>
@@ -1549,11 +1698,106 @@ const HomeScreen: React.FC = () => {
           zoneName={currentZone?.name}
           zoneLoading={zoneLoading}
           zoneError={zoneError}
+          driverRating={driverRating}
+          totalRatings={totalRatings}
+          vehicleInfo={selectedVehicle ? `${selectedVehicle.licensePlate || ''} ${selectedVehicle.make || ''} ${selectedVehicle.model || ''}`.trim() || null : null}
           onPressStatus={() => setStatusModalVisible(true)}
           onEndShift={handleEndShift}
           onRetryZone={retryZoneDetection}
           onOpenMenu={openDrawer}
+          onOpenDispatcherChat={() => navigation.navigate("DispatcherChat" as never)}
         />
+
+        {/* Permission banner — only renders while overlay / battery
+            optimisation grants are still missing. Self-clears once the
+            user toggles them in settings. */}
+        <OverlayPermissionBanner />
+
+        {/* Out-of-zone alert banner */}
+        {isOutOfZone && !isBusy && (
+          <OutOfZoneBanner
+            zoneName={lastKnownZoneName}
+            onDismiss={dismissOutOfZone}
+          />
+        )}
+
+        {/* ─── Eligibility badge ───────────────────────────────────────────
+            One-line verdict on whether the driver would receive a job offer
+            RIGHT NOW, plus a tap-to-expand list of blocking reasons. This
+            replaces the "why am I not getting jobs?" mystery with concrete
+            actionable copy ("start a shift", "license expired", etc).
+            Hidden while the out-of-zone banner is up — that banner already
+            states the specific blocker, so showing both just stacks alerts. */}
+        {eligibility.verdict !== 'LOADING' && !(isOutOfZone && !isBusy) && (
+          <TouchableOpacity
+            activeOpacity={0.85}
+            onPress={() => {
+              if (eligibility.reasons.length === 0) return;
+              Alert.alert(
+                eligibility.verdict === 'ACCEPTING'
+                  ? "You're accepting jobs"
+                  : 'Why you may not be getting offers',
+                eligibility.reasons.length > 0
+                  ? eligibility.reasons.map((r, i) => `${i + 1}. ${r}`).join('\n')
+                  : "You're fully set up — offers will arrive here as soon as a passenger books.",
+                [{ text: 'OK' }],
+              );
+            }}
+            style={{
+              flexDirection: 'row',
+              alignItems: 'center',
+              marginHorizontal: 14,
+              marginVertical: 6,
+              paddingHorizontal: 12,
+              paddingVertical: 10,
+              borderRadius: 12,
+              backgroundColor:
+                eligibility.verdict === 'ACCEPTING' ? 'rgba(34,197,94,0.12)'
+                : eligibility.verdict === 'OFF_SHIFT' ? 'rgba(148,163,184,0.14)'
+                : eligibility.verdict === 'INELIGIBLE' ? 'rgba(239,68,68,0.14)'
+                : 'rgba(234,179,8,0.14)', // PARTIAL
+              borderWidth: 1,
+              borderColor:
+                eligibility.verdict === 'ACCEPTING' ? 'rgba(34,197,94,0.3)'
+                : eligibility.verdict === 'OFF_SHIFT' ? 'rgba(148,163,184,0.3)'
+                : eligibility.verdict === 'INELIGIBLE' ? 'rgba(239,68,68,0.3)'
+                : 'rgba(234,179,8,0.3)',
+            }}>
+            <MCIcon
+              name={
+                eligibility.verdict === 'ACCEPTING' ? 'check-circle'
+                : eligibility.verdict === 'OFF_SHIFT' ? 'power-standby'
+                : eligibility.verdict === 'INELIGIBLE' ? 'alert-circle'
+                : 'alert-octagon'
+              }
+              size={18}
+              color={
+                eligibility.verdict === 'ACCEPTING' ? '#22c55e'
+                : eligibility.verdict === 'OFF_SHIFT' ? '#94a3b8'
+                : eligibility.verdict === 'INELIGIBLE' ? '#ef4444'
+                : '#eab308'
+              }
+            />
+            <Text style={{
+              flex: 1,
+              marginLeft: 8,
+              color: '#e5e7eb',
+              fontSize: 13,
+              fontWeight: '500',
+            }}>
+              {eligibility.verdict === 'ACCEPTING'
+                ? 'Accepting jobs — you\'re in the offer pool'
+                : eligibility.verdict === 'OFF_SHIFT'
+                  ? 'Off shift — start a shift to receive offers'
+                  : eligibility.verdict === 'INELIGIBLE'
+                    ? `Blocked — tap for details${eligibility.reasons.length > 0 ? ` (${eligibility.reasons.length})` : ''}`
+                    : `Partially eligible — tap for ${eligibility.reasons.length} reason${eligibility.reasons.length === 1 ? '' : 's'}`}
+            </Text>
+            {eligibility.reasons.length > 0 ? (
+              <MCIcon name="chevron-right" size={18} color="#94a3b8" />
+            ) : null}
+          </TouchableOpacity>
+        )}
 
         <ScrollView
           style={styles.scrollView}
@@ -1561,63 +1805,70 @@ const HomeScreen: React.FC = () => {
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor="#fff" />}
           showsVerticalScrollIndicator={false}
         >
+          {/* ✅ Greeting Banner with today's quick stats */}
+          <GreetingBanner
+            driverName={driver?.firstName && driver?.lastName ? `${driver.firstName} ${driver.lastName}` : driver?.firstName || "Driver"}
+            totalEarnings={todayStats.earnings}
+            totalTrips={todayStats.jobs + shiftSnapshot.totalRides}
+            onlineMinutes={Math.floor(shiftSnapshot.durationSeconds / 60)}
+            formatCurrency={formatCurrency}
+          />
+
+          {/* ✅ Earnings Goal Progress */}
+          <EarningsGoalCard
+            currentEarnings={todayStats.earnings}
+            dailyGoal={150}
+            formatCurrency={formatCurrency}
+          />
+
+          {/* Tariff (compact) */}
           <TariffCard
             tariffName={selectedTariff?.name}
             baseFare={selectedTariff?.baseFare}
             perKm={selectedTariff?.perKmRate}
             perMinute={selectedTariff?.perMinuteRate}
-            onPress={() => {
-              const activeVehicleId = selectedVehicle?.id || activeShift?.vehicle?.id || "";
-              const mode: "change" | "start" = activeShift ? "change" : "start";
-              navigation.navigate("TariffSelection", {
-                vehicleId: activeVehicleId,
-                mode,
-              });
-            }}
+            onPress={() => setTariffPickerVisible(true)}
             formatCurrency={formatCurrency}
           />
 
-                <LocationMap
-          location={location}
-          mapProvider={mapProvider}
-          mapProviderLoading={mapProviderLoading}
-          zoneCoordinates={currentZone?.coordinates}
-          vehicle={selectedVehicle}
-          locationUpdateInterval={locationUpdateInterval}
-        />
+          {/* Active / Accepted job cards */}
+          <JobStatusCards
+            acceptedJobsCount={acceptedJobsCount}
+            onGoingJobsCount={onGoingJobsCount}
+            onViewAcceptedJobs={handleViewAcceptedJobs}
+            onViewOnGoingJobs={handleViewOnGoingJobs}
+            activeJobPreview={activeJobPreview}
+          />
 
-        <View style={styles.metricsRow}>
-          <DashboardMetric icon="cash" label="Earned" value={formatCurrency(shiftSnapshot.totalEarnings)} color="#f5b400" />
-          <DashboardMetric icon="car" label="Trips" value={shiftSnapshot.totalRides.toString()} color="#4ade80" />
-          <DashboardMetric icon="clock-outline" label="Time" value={shiftSnapshot.durationLabel} color="#38bdf8" />
-        </View>
+          {/* Available jobs to claim */}
+          <UpcomingJobsSection
+            jobs={upcomingJobsCards}
+            loading={upcomingJobsLoading}
+            errorMessage={upcomingJobsError}
+            claimingJobId={claimingJobId}
+            onClaimJob={handleClaimUpcomingJob}
+            onRefresh={() => refreshUpcomingJobs(true)}
+            formatCurrency={formatCurrency}
+          />
 
-        <JobStatusCards
-          acceptedJobsCount={acceptedJobsCount}
-          onGoingJobsCount={onGoingJobsCount}
-          onViewAcceptedJobs={handleViewAcceptedJobs}
-          onViewOnGoingJobs={handleViewOnGoingJobs}
-          activeJobPreview={activeJobPreview}
-        />
+          {/* ✅ Map (collapsible - moved below priority content) */}
+          {mapExpanded && (
+            <LocationMap
+              location={location}
+              mapProvider={mapProvider}
+              mapProviderLoading={mapProviderLoading}
+              zoneCoordinates={currentZone?.coordinates}
+              vehicle={selectedVehicle}
+              locationUpdateInterval={locationUpdateInterval}
+            />
+          )}
 
-        <UpcomingJobsSection
-          jobs={upcomingJobsCards}
-          loading={upcomingJobsLoading}
-          errorMessage={upcomingJobsError}
-          claimingJobId={claimingJobId}
-          onClaimJob={handleClaimUpcomingJob}
-          onRefresh={() => refreshUpcomingJobs(true)}
-          formatCurrency={formatCurrency}
-        />
-
-        <RecentJobsSection
-          jobs={recentJobs}
-          loading={recentJobsLoading}
-          onRefresh={() => refreshRecentJobs(3)}
-          formatCurrency={formatCurrency}
-          formatDuration={formatDuration}
-        />
         </ScrollView>
+
+        {/* 🚨 Emergency SOS now lives inside DashboardHeader next to the
+             settings icon (see DashboardHeader.tsx topRow). Placed there so
+             it's always visible and thumb-reachable without blocking any
+             screen content. */}
 
         <StatusModal
           visible={statusModalVisible}
@@ -1890,19 +2141,34 @@ const HomeScreen: React.FC = () => {
 
             <View style={styles.drawerStatsRow}>
               <View style={styles.drawerStatCard}>
-                <Text style={styles.drawerStatValue}>
+                <Text
+                  style={styles.drawerStatValue}
+                  numberOfLines={1}
+                  adjustsFontSizeToFit
+                  minimumFontScale={0.55}
+                >
                   {formatCurrency(shiftSnapshot.totalEarnings)}
                 </Text>
                 <Text style={styles.drawerStatLabel}>Shift Earnings</Text>
               </View>
               <View style={styles.drawerStatCard}>
-                <Text style={styles.drawerStatValue}>
+                <Text
+                  style={styles.drawerStatValue}
+                  numberOfLines={1}
+                  adjustsFontSizeToFit
+                  minimumFontScale={0.55}
+                >
                   {shiftSnapshot.totalRides}
                 </Text>
                 <Text style={styles.drawerStatLabel}>Trips Completed</Text>
               </View>
               <View style={styles.drawerStatCard}>
-                <Text style={styles.drawerStatValue}>
+                <Text
+                  style={styles.drawerStatValue}
+                  numberOfLines={1}
+                  adjustsFontSizeToFit
+                  minimumFontScale={0.55}
+                >
                   {shiftSnapshot.durationLabel}
                 </Text>
                 <Text style={styles.drawerStatLabel}>Time On Shift</Text>
@@ -1916,8 +2182,12 @@ const HomeScreen: React.FC = () => {
                   style={styles.drawerMenuItem}
                   activeOpacity={0.85}
                   onPress={() => {
-                    console.log(`Menu item selected: ${item.key}`);
                     closeDrawer();
+                    if ((item as any).route) {
+                      setTimeout(() => {
+                        navigation.navigate((item as any).route as any);
+                      }, 250);
+                    }
                   }}
                 >
                   <View style={styles.drawerMenuIcon}>
@@ -1949,6 +2219,79 @@ const HomeScreen: React.FC = () => {
               <Text style={styles.drawerFooterText}>Close menu</Text>
             </TouchableOpacity>
           </Animated.View>
+        </View>
+      </Modal>
+
+      {/* Tariff Picker Modal */}
+      <Modal
+        transparent
+        visible={tariffPickerVisible}
+        animationType="slide"
+        onRequestClose={() => setTariffPickerVisible(false)}
+      >
+        <View style={styles.tariffPickerOverlay}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setTariffPickerVisible(false)} />
+          <View style={styles.tariffPickerSheet}>
+            <View style={styles.tariffPickerHeader}>
+              <Text style={styles.tariffPickerTitle}>Change Tariff</Text>
+              <TouchableOpacity onPress={() => setTariffPickerVisible(false)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                <MCIcon name="close" size={24} color="#ffffff" />
+              </TouchableOpacity>
+            </View>
+            {selectedTariff && (
+              <Text style={styles.tariffPickerCurrentLabel}>
+                Current: {selectedTariff.name}
+              </Text>
+            )}
+            <ScrollView style={styles.tariffPickerList} showsVerticalScrollIndicator={false}>
+              {tariffs.map((tariff) => {
+                const isCurrent = selectedTariff?.id === tariff.id;
+                return (
+                  <TouchableOpacity
+                    key={tariff.id}
+                    style={[styles.tariffPickerCard, isCurrent && styles.tariffPickerCardCurrent]}
+                    activeOpacity={0.85}
+                    onPress={() => {
+                      selectTariff(tariff).catch(console.warn);
+                      setTariffPickerVisible(false);
+                      Toast.show({ type: "success", text1: "Tariff Changed", text2: tariff.name });
+                    }}
+                  >
+                    <View style={styles.tariffPickerCardHeader}>
+                      <Text style={[styles.tariffPickerCardName, isCurrent && styles.tariffPickerCardNameCurrent]}>
+                        {tariff.name}
+                      </Text>
+                      {isCurrent && (
+                        <View style={styles.tariffPickerCurrentBadge}>
+                          <Text style={styles.tariffPickerCurrentBadgeText}>CURRENT</Text>
+                        </View>
+                      )}
+                    </View>
+                    <View style={styles.tariffPickerRateRow}>
+                      <View>
+                        <Text style={styles.tariffPickerRateLabel}>Base Fare:</Text>
+                        <Text style={styles.tariffPickerRateValue}>${tariff.baseFare?.toFixed(2) ?? '0.00'}</Text>
+                      </View>
+                      <View>
+                        <Text style={styles.tariffPickerRateLabel}>Per KM:</Text>
+                        <Text style={styles.tariffPickerRateValue}>${tariff.perKmRate?.toFixed(2) ?? '0.00'}</Text>
+                      </View>
+                      <View>
+                        <Text style={styles.tariffPickerRateLabel}>Per Min:</Text>
+                        <Text style={styles.tariffPickerRateValue}>${tariff.perMinuteRate?.toFixed(2) ?? '0.00'}</Text>
+                      </View>
+                    </View>
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+            <TouchableOpacity
+              style={styles.tariffPickerCancelBtn}
+              onPress={() => setTariffPickerVisible(false)}
+            >
+              <Text style={styles.tariffPickerCancelText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
         </View>
       </Modal>
     </SafeAreaView>
@@ -2581,6 +2924,105 @@ const styles = StyleSheet.create({
   awayReminderPrimaryText: {
     color: "#0f111a",
     fontWeight: "700",
+  },
+  // Tariff Picker Modal
+  tariffPickerOverlay: {
+    flex: 1,
+    justifyContent: "flex-end",
+    backgroundColor: "rgba(0,0,0,0.6)",
+  },
+  tariffPickerSheet: {
+    backgroundColor: "#14161f",
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    paddingHorizontal: 20,
+    paddingTop: 20,
+    paddingBottom: 24,
+    maxHeight: "80%",
+  },
+  tariffPickerHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 8,
+  },
+  tariffPickerTitle: {
+    fontSize: 20,
+    fontWeight: "700",
+    color: "#ffffff",
+  },
+  tariffPickerCurrentLabel: {
+    fontSize: 13,
+    color: "#8d95ad",
+    marginBottom: 16,
+  },
+  tariffPickerList: {
+    marginBottom: 12,
+  },
+  tariffPickerCard: {
+    backgroundColor: "#1a1d29",
+    borderRadius: 14,
+    padding: 16,
+    marginBottom: 10,
+    borderWidth: 1.5,
+    borderColor: "#2a2f3f",
+  },
+  tariffPickerCardCurrent: {
+    borderColor: "#f5b400",
+    backgroundColor: "rgba(99, 102, 241, 0.08)",
+  },
+  tariffPickerCardHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 10,
+  },
+  tariffPickerCardName: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#ffffff",
+    flex: 1,
+  },
+  tariffPickerCardNameCurrent: {
+    color: "#f5b400",
+  },
+  tariffPickerCurrentBadge: {
+    backgroundColor: "rgba(99, 102, 241, 0.2)",
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#f5b400",
+  },
+  tariffPickerCurrentBadgeText: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#f5b400",
+  },
+  tariffPickerRateRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+  },
+  tariffPickerRateLabel: {
+    fontSize: 11,
+    color: "#8d95ad",
+    marginBottom: 2,
+  },
+  tariffPickerRateValue: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#f5b400",
+  },
+  tariffPickerCancelBtn: {
+    backgroundColor: "#2a2f3f",
+    borderRadius: 14,
+    paddingVertical: 14,
+    alignItems: "center",
+  },
+  tariffPickerCancelText: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#ffffff",
   },
 });
 

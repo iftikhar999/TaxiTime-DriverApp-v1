@@ -10,6 +10,7 @@ import {
     TouchableOpacity,
     View
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import Toast from 'react-native-toast-message';
 import FormTextInput from '../../components/design/FormTextInput';
 import Typography from '../../components/design/Typography';
@@ -26,7 +27,10 @@ const RegisterScreen: React.FC<RegisterScreenProps> = ({ navigation }) => {
   const [lastName, setLastName] = useState('');
   const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
-  const [companyCode, setCompanyCode] = useState('CITY001');
+  // Blank by default — a new driver must enter their own fleet's code. Was
+  // hardcoded to 'CITY001' (a specific tenant), which pre-filled every signup
+  // with the wrong company. The field still shows CITY001 as a placeholder.
+  const [companyCode, setCompanyCode] = useState('');
   const [licenseNumber, setLicenseNumber] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -87,6 +91,7 @@ const RegisterScreen: React.FC<RegisterScreenProps> = ({ navigation }) => {
   };
 
   return (
+    <SafeAreaView style={styles.container} edges={['top','bottom','left','right']}>
     <KeyboardAvoidingView
       style={styles.container}
       behavior={Platform.select({ ios: 'padding', android: undefined })}
@@ -169,6 +174,7 @@ const RegisterScreen: React.FC<RegisterScreenProps> = ({ navigation }) => {
         </TouchableOpacity>
       </ScrollView>
     </KeyboardAvoidingView>
+    </SafeAreaView>
   );
 };
 

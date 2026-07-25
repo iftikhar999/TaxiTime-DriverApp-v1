@@ -11,7 +11,8 @@ export const useActiveJob = () => {
   const refresh = useCallback(async () => {
     try {
       setLoading(true);
-      const active = await getActiveJob();
+      const response = await getActiveJob();
+      const active = response?.job || response?.data?.job || response;
       setJob(active);
       if (active?.id) {
         const stopResp = await getJobStops(active.id);
